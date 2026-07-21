@@ -12,7 +12,7 @@ use std::{
     sync::Mutex,
     time::{SystemTime, UNIX_EPOCH},
 };
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
 const STORE_FILE: &str = "screenpro-store.json";
@@ -112,7 +112,8 @@ impl Default for Store {
 
 struct AppState {
     store: Mutex<Store>,
-    saver_windows: Mutex<Vec<String>>,
+    saver_active: Mutex<bool>,
+    saver_project_id: Mutex<Option<String>>,
 }
 
 fn default_background() -> Value {
@@ -597,78 +598,50 @@ fn find_project(app: &AppHandle, project_id: &str) -> Result<ScreenSaverProject,
         .ok_or_else(|| "找不到屏保项目".into())
 }
 
-fn create_saver_windows(app: &AppHandle, project_id: &str) -> Result<(), String> {
+fn activate_main_saver(app: &AppHandle, project_id: &str) -> Result<(), String> {
     find_project(app, project_id)?;
     let state = app.state::<AppState>();
-    if !state
-        .saver_windows
-        .lock()
-        .map_err(|_| "屏保状态异常".to_string())?
-        .is_empty()
     {
-        return Err("屏保已经在运行".into());
-    }
-    let monitors = app
-        .available_monitors()
-        .map_err(|err| format!("无法读取显示器：{err}"))?;
-    let monitors = if monitors.is_empty() {
-        vec![app
-            .primary_monitor()
-            .map_err(|err| format!("无法读取主显示器：{err}"))?
-            .ok_or("没有可用显示器")?]
-    } else {
-        monitors
-    };
-    let mut labels = Vec::new();
-    for (index, monitor) in monitors.iter().enumerate() {
-        let label = format!("saver-{index}");
-        let size = monitor.size();
-        let position = monitor.position();
-        let window = WebviewWindowBuilder::new(
-            app,
-            &label,
-            // Route selection is based on the Tauri window label in React. Keeping the
-            // Webview URL to a plain packaged document avoids a second-window blank page.
-            WebviewUrl::App("index.html".into()),
-        )
-        .title("ScreenPro")
-        .visible(false)
-        .decorations(false)
-        .resizable(false)
-        .minimizable(false)
-        .maximizable(false)
-        .closable(false)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .transparent(false)
-        .position(position.x as f64, position.y as f64)
-        .inner_size(size.width as f64, size.height as f64)
-        .build()
-        .map_err(|err| format!("无法创建屏保窗口：{err}"))?;
-        // Apply the presentation properties once more after construction. On some Windows
-        // WebView2 hosts, builder-time decoration flags are otherwise ignored for child windows.
-        window
-            .set_decorations(false)
-            .map_err(|err| format!("无法移除屏保窗口边框：{err}"))?;
-        window
-            .set_resizable(false)
-            .map_err(|err| format!("无法锁定屏保窗口尺寸：{err}"))?;
-        window
-            .set_fullscreen(true)
-            .map_err(|err| format!("无法切换到全屏屏保：{err}"))?;
-        window
-            .show()
-            .map_err(|err| format!("无法显示屏保窗口：{err}"))?;
-        labels.push(label);
+        let mut active = state
+            .saver_active
+            .lock()
+            .map_err(|_| "屏保状态异常".to_string())?;
+        if *active {
+            return Err("屏保已经在运行".into());
+        }
+        *active = true;
     }
     *state
-        .saver_windows
+        .saver_project_id
         .lock()
-        .map_err(|_| "屏保状态异常".to_string())? = labels;
-    if let Some(main) = app.get_webview_window("main") {
-        let _ = main.hide();
+        .map_err(|_| "屏保状态异常".to_string())? = Some(project_id.to_string());
+
+    let result = (|| -> Result<(), String> {
+        let main = app.get_webview_window("main").ok_or("找不到主工作台窗口")?;
+        // Reuse the already-running WebView instead of constructing another WebView2 process.
+        // That avoids the Windows AppHang seen when the old multi-window saver started.
+        main.set_always_on_top(true)
+            .map_err(|err| format!("无法置顶屏保窗口：{err}"))?;
+        main.set_decorations(false)
+            .map_err(|err| format!("无法移除屏保窗口边框：{err}"))?;
+        main.set_resizable(false)
+            .map_err(|err| format!("无法锁定屏保窗口尺寸：{err}"))?;
+        main.set_fullscreen(true)
+            .map_err(|err| format!("无法切换到全屏屏保：{err}"))?;
+        Ok(())
+    })();
+
+    if result.is_err() {
+        *state
+            .saver_active
+            .lock()
+            .map_err(|_| "屏保状态异常".to_string())? = false;
+        *state
+            .saver_project_id
+            .lock()
+            .map_err(|_| "屏保状态异常".to_string())? = None;
     }
-    Ok(())
+    result
 }
 
 #[tauri::command]
@@ -687,38 +660,51 @@ fn start_saver(app: AppHandle, project_id: Option<String>) -> Result<(), String>
                 .ok_or("请先在我的库中设置当前屏保")?
         }
     };
-    create_saver_windows(&app, &selected)
+    activate_main_saver(&app, &selected)
 }
 
 #[tauri::command]
 fn end_saver(app: AppHandle) -> Result<(), String> {
     let state = app.state::<AppState>();
-    let labels = std::mem::take(
-        &mut *state
-            .saver_windows
-            .lock()
-            .map_err(|_| "屏保状态异常".to_string())?,
-    );
-    for label in labels {
-        if let Some(window) = app.get_webview_window(&label) {
-            let _ = window.close();
-        }
-    }
-    if let Some(main) = app.get_webview_window("main") {
-        let _ = main.show();
-        let _ = main.set_focus();
-    }
+    *state
+        .saver_active
+        .lock()
+        .map_err(|_| "屏保状态异常".to_string())? = false;
+    *state
+        .saver_project_id
+        .lock()
+        .map_err(|_| "屏保状态异常".to_string())? = None;
+
+    let main = app.get_webview_window("main").ok_or("找不到主工作台窗口")?;
+    main.set_fullscreen(false)
+        .map_err(|err| format!("无法退出全屏屏保：{err}"))?;
+    main.set_always_on_top(false)
+        .map_err(|err| format!("无法恢复工作台窗口层级：{err}"))?;
+    main.set_decorations(true)
+        .map_err(|err| format!("无法恢复工作台窗口边框：{err}"))?;
+    main.set_resizable(true)
+        .map_err(|err| format!("无法恢复工作台窗口尺寸：{err}"))?;
+    let _ = main.show();
+    let _ = main.set_focus();
     Ok(())
 }
 
 #[tauri::command]
 fn saver_status(app: AppHandle) -> Result<bool, String> {
-    Ok(!app
+    Ok(*app
         .state::<AppState>()
-        .saver_windows
+        .saver_active
         .lock()
-        .map_err(|_| "屏保状态异常".to_string())?
-        .is_empty())
+        .map_err(|_| "屏保状态异常".to_string())?)
+}
+
+#[tauri::command]
+fn get_saver_project_id(app: AppHandle) -> Result<Option<String>, String> {
+    app.state::<AppState>()
+        .saver_project_id
+        .lock()
+        .map(|project_id| project_id.clone())
+        .map_err(|_| "屏保状态异常".to_string())
 }
 
 #[tauri::command]
@@ -751,7 +737,8 @@ pub fn run() {
             });
             app.manage(AppState {
                 store: Mutex::new(store),
-                saver_windows: Mutex::new(Vec::new()),
+                saver_active: Mutex::new(false),
+                saver_project_id: Mutex::new(None),
             });
             Ok(())
         })
@@ -772,6 +759,7 @@ pub fn run() {
             start_saver,
             end_saver,
             saver_status,
+            get_saver_project_id,
             lock_system
         ])
         .run(tauri::generate_context!())

@@ -14,7 +14,7 @@
 - **离线资源库**：极简文字、照片展示、数字时钟、深色专注四个首发模板。
 - **画布编辑器**：添加、选中、拖动、调整文字、图片、时钟组件。
 - **图片托管**：导入图片后复制到应用私有目录，原始文件移动不会使项目失效。
-- **全部显示器覆盖**：启动后为已连接显示器创建全屏、无边框、置顶窗口。
+- **稳定全屏覆盖**：当前 MVP 复用主工作台窗口进入全屏、无边框、置顶的屏保模式；多显示器独立覆盖将在后续稳定版本恢复。
 - **密码退出（覆盖式屏保）**：使用本机应用独立密码结束 ScreenPro 覆盖窗口；凭据采用 Argon2id 哈希保存，支持安全问题重设。
 - **安全锁定 Windows**：调用 Windows 原生锁屏，后台程序不会被 ScreenPro 终止；使用 Windows 账户密码恢复。
 - **全局快捷键**：启动当前屏保，或为最多 9 个私有作品分配专属快捷键。
@@ -84,12 +84,12 @@ src-tauri/target/release/bundle/nsis/
 
 ## 自动更新与发布
 
-Windows 发布由 GitHub Actions 自动完成。推送形如 `v0.1.3` 的 tag 后，会构建、签名并发布 Windows NSIS 安装包以及更新清单。
+Windows 发布由 GitHub Actions 自动完成。推送形如 `v0.1.4` 的 tag 后，会构建、签名并发布 Windows NSIS 安装包以及更新清单。
 
 ```powershell
 # 更新 package.json、src-tauri/Cargo.toml、src-tauri/tauri.conf.json 中的版本号后：
-git tag v0.1.3
-git push origin v0.1.3
+git tag v0.1.4
+git push origin v0.1.4
 ```
 
 详细的签名密钥、安全边界和发布步骤请见 [RELEASE.md](RELEASE.md)。

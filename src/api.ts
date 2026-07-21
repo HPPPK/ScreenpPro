@@ -16,5 +16,6 @@ export const api = {
  getAssetPath: (assetId: string) => invoke<string>("get_asset_path", { assetId }),
  startSaver: (projectId?: string) => invoke<void>("start_saver", { projectId }),
  endSaver: () => invoke<void>("end_saver"),
+ getSaverProjectId: () => invoke<string | null>("get_saver_project_id"),
  lockSystem: () => invoke<void>("lock_system"),
 };

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties, type MouseEvent } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type FormEvent, type MouseEvent } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { check } from "@tauri-apps/plugin-updater";
@@ -53,10 +53,68 @@ function Editor({ source, close, save }: { source: ScreenSaverProject; close: ()
 }
 
 function Saver() {
-  const [data, setData] = useState<BootstrapData | null>(null); const [show, setShow] = useState(false); const [password, setPassword] = useState(""); const [error, setError] = useState("");
-  useEffect(() => { api.bootstrap().then(setData); const up = () => setShow(true); window.addEventListener("keydown", up); return () => window.removeEventListener("keydown", up); }, []);
-  if (!data) return <main className="saver-shell" />; const project = data.projects.find((p) => p.id === data.activeProjectId) ?? data.projects[0]; if (!project) return <main className="saver-shell">没有可用屏保</main>;
-  return <main className="saver-shell" onMouseDown={() => setShow(true)}><Visual project={project} />{!show && <div className="saver-hint">移动鼠标或按任意键以解锁</div>}{show && <div className="unlock-shade"><form className="unlock-card" onMouseDown={(e) => e.stopPropagation()} onSubmit={async (e) => { e.preventDefault(); if (await api.verifyUnlock(password)) await api.endSaver(); else { setError("密码不正确，请重试"); setPassword(""); } }}><div className="brand-mark">S</div><p className="eyebrow">SCREENPRO 已保护屏幕</p><h1>输入密码以退出</h1><p>后台任务仍在继续运行。</p><input autoFocus type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="保护密码" />{error && <p className="form-error">{error}</p>}<button className="primary-button">解锁并返回</button></form></div>}</main>;
+  const [data, setData] = useState<BootstrapData | null>(null);
+  const [loadError, setLoadError] = useState("");
+  const [showUnlock, setShowUnlock] = useState(false);
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const load = () => {
+    setLoadError("");
+    api.bootstrap().then(setData).catch((reason) => setLoadError(String(reason).replace(/^Error:\s*/, "")));
+  };
+
+  useEffect(() => {
+    load();
+    const wake = () => setShowUnlock(true);
+    window.addEventListener("keydown", wake);
+    window.addEventListener("pointerdown", wake);
+    window.addEventListener("pointermove", wake);
+    return () => {
+      window.removeEventListener("keydown", wake);
+      window.removeEventListener("pointerdown", wake);
+      window.removeEventListener("pointermove", wake);
+    };
+  }, []);
+
+  if (loadError) return <main className="saver-shell saver-state"><div><div className="brand-mark">S</div><h1>屏保加载失败</h1><p>{loadError}</p><button className="ghost-button" onClick={load}>重试加载</button></div></main>;
+  if (!data) return <main className="saver-shell saver-state"><div><div className="brand-mark">S</div><p>正在加载屏保…</p></div></main>;
+
+  const requestedProjectId = new URLSearchParams(window.location.search).get("screenproSaverProjectId");
+  const project = data.projects.find((item) => item.id === requestedProjectId) ?? data.projects.find((item) => item.id === data.activeProjectId) ?? data.projects[0];
+  if (!project) return <main className="saver-shell saver-state"><div><div className="brand-mark">S</div><h1>没有可用的屏保项目</h1><p>请结束当前覆盖窗口后，在工作台中选择或创建一个项目。</p></div></main>;
+
+  const unlock = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      if (await api.verifyUnlock(password)) {
+        await api.endSaver();
+      } else {
+        setError("密码不正确，请重试");
+        setPassword("");
+      }
+    } catch (reason) {
+      setError("无法完成解锁：" + String(reason).replace(/^Error:\s*/, ""));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return <main className="saver-shell" onPointerDown={() => setShowUnlock(true)} onPointerMove={() => setShowUnlock(true)}>
+    <Visual project={project} />
+    {!showUnlock && <div className="saver-hint">移动鼠标、点击或按任意键以显示解锁界面</div>}
+    {showUnlock && <div className="unlock-shade"><form className="unlock-card" onPointerDown={(event) => event.stopPropagation()} onSubmit={unlock}>
+      <div className="brand-mark">S</div><p className="eyebrow">SCREENPRO 覆盖式屏保</p><h1>输入密码以退出</h1>
+      <p>后台任务仍在继续运行。此模式不能替代 Windows 系统锁屏。</p>
+      <input autoFocus type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="保护密码" />
+      {error && <p className="form-error">{error}</p>}
+      <button className="primary-button" disabled={busy}>{busy ? "正在验证…" : "解锁并返回"}</button>
+    </form></div>}
+  </main>;
 }
 
 function Card({ project, active, edit, start, activate, remove }: { project: ScreenSaverProject; active: boolean; edit: () => void; start: () => void; activate: () => void; remove: () => void }) { return <article className="card"><Visual project={project} /><div className="card-body"><div><div className="card-name"><h3>{project.name}</h3>{active && <b>当前</b>}</div><p>{project.description || "自定义屏幕保护"}</p></div><div className="card-actions"><button title="编辑" onClick={edit}>✎</button><button title="立即启动" onClick={start}>▶</button><button title="设为当前" disabled={active} onClick={activate}>✓</button><button title="删除" className="danger" onClick={remove}>⌫</button></div></div></article>; }
@@ -97,9 +155,9 @@ function App() {
   const error = (e: unknown) => setNotice({ kind: "bad", text: String(e).replace(/^Error:\s*/, "") });
   const register = async (next: AppSettings) => { await globalShortcut.unregisterAll(); const pairs = [{ key: next.launchShortcut, id: undefined }, ...Object.entries(next.libraryShortcuts).map(([key, id]) => ({ key, id }))]; for (const pair of pairs) await globalShortcut.register(pair.key, () => api.startSaver(pair.id).catch(() => undefined)); };
   useEffect(() => { if (data?.hasSecurity) register(data.settings).catch(() => undefined); return () => { globalShortcut.unregisterAll().catch(() => undefined); }; }, [data?.hasSecurity]);
-  if (location.hash === "#/saver") return <Saver />; if (!data) return <main className="loading"><div className="brand-mark">S</div>正在打开 ScreenPro…</main>; if (!data.hasSecurity) return <SecuritySetup done={refresh} />; if (editor) return <Editor source={editor} close={() => setEditor(null)} save={async (project) => { try { await api.saveProject(project); await refresh(); setEditor(null); setNotice({ kind: "ok", text: "作品已保存到我的库" }); } catch (e) { error(e); } }} />;
+  if (location.hash.startsWith("#/saver")) return <Saver />; if (!data) return <main className="loading"><div className="brand-mark">S</div>正在打开 ScreenPro…</main>; if (!data.hasSecurity) return <SecuritySetup done={refresh} />; if (editor) return <Editor source={editor} close={() => setEditor(null)} save={async (project) => { try { await api.saveProject(project); await refresh(); setEditor(null); setNotice({ kind: "ok", text: "作品已保存到我的库" }); } catch (e) { error(e); } }} />;
   const active = data.projects.find((p) => p.id === data.activeProjectId); const launch = async (id?: string) => { try { await api.startSaver(id); } catch (e) { error(e); } }; const make = async () => { try { const p = await api.createBlank(name); await refresh(); setShowNew(false); setEditor(p); } catch (e) { error(e); } }; const getTemplate = async (template: ScreenSaverProject) => { try { const p = await api.cloneTemplate(template.id); await refresh(); setEditor(p); setNotice({ kind: "ok", text: "已下载到我的库，可以开始编辑" }); } catch (e) { error(e); } };
-  return <div className="app"><aside className="sidebar"><div className="app-brand"><div className="brand-mark">S</div><div><strong>ScreenPro</strong><small>Screen saver studio</small></div></div><nav>{nav.map((item) => <button key={item.id} className={view === item.id ? "nav active" : "nav"} onClick={() => setView(item.id)}><span>{item.icon}</span>{item.label}</button>)}</nav><div className="side-foot"><div>◉ <span><b>本地保护已启用</b><small>不终止后台程序</small></span></div><small>v0.1 · MVP</small></div></aside><main className="content">{view === "home" && <><header className="page-header"><div><p className="eyebrow">工作台</p><h1>让屏幕在离开时，仍然有温度。</h1><p>选择一份作品，按下快捷键。ScreenPro 会覆盖所有显示器，同时让后台工作继续运行。</p></div><button className="primary-button" disabled={!active} onClick={() => launch()}>▶ 立即启动</button></header><section className="home-grid"><article className="active-card"><div className="card-heading"><div><p className="eyebrow">当前屏幕保护</p><h2>{active?.name ?? "还没有作品"}</h2></div>{active && <button className="ghost-button" onClick={() => setEditor(active)}>编辑作品</button>}</div>{active ? <Visual project={active} /> : <div className="empty-visual">前往资源库下载模板，或创建空白项目。</div>}<footer><kbd>{data.settings.launchShortcut.replace("CommandOrControl", "Ctrl / ⌘")}</kbd><span>启动当前屏保</span></footer></article><article className="info-card"><span>⌁</span><p className="eyebrow">保护方式</p><h2>覆盖，而不打断</h2><p>ScreenPro 创建全屏置顶窗口，不会结束下载、渲染、同步或其他后台进程。</p><hr /><small>退出时需要应用密码；系统锁屏和系统级快捷键仍由 Windows/macOS 控制。</small></article></section><section className="section"><div className="section-title"><div><p className="eyebrow">最近作品</p><h2>我的屏保库</h2></div><button className="text-button" onClick={() => setView("library")}>查看全部 →</button></div>{data.projects.length ? <div className="cards">{data.projects.slice(0, 3).map((p) => <Card key={p.id} project={p} active={p.id === data.activeProjectId} edit={() => setEditor(p)} start={() => launch(p.id)} activate={async () => { await api.setActive(p.id); await refresh(); }} remove={() => {}} />)}</div> : <div className="empty">你的私人屏保库还是空的。<button className="primary-button" onClick={() => setView("market")}>探索资源库</button></div>}</section></>}
+  return <div className="app"><aside className="sidebar"><div className="app-brand"><div className="brand-mark">S</div><div><strong>ScreenPro</strong><small>Screen saver studio</small></div></div><nav>{nav.map((item) => <button key={item.id} className={view === item.id ? "nav active" : "nav"} onClick={() => setView(item.id)}><span>{item.icon}</span>{item.label}</button>)}</nav><div className="side-foot"><div>◉ <span><b>本地保护已启用</b><small>不终止后台程序</small></span></div><small>v0.1.2 · Windows MVP</small></div></aside><main className="content">{view === "home" && <><header className="page-header"><div><p className="eyebrow">工作台</p><h1>让屏幕在离开时，仍然有温度。</h1><p>选择一份作品，按下快捷键。覆盖式屏保会覆盖所有显示器，同时让后台工作继续运行；需要真正锁定时，请使用 Windows 系统锁定。</p></div><div className="launch-actions"><button className="secure-button" onClick={async () => { try { await api.lockSystem(); } catch (e) { error(e); } }}>🔒 安全锁定 Windows</button><button className="primary-button" disabled={!active} onClick={() => launch()}>▶ 启动覆盖式屏保</button></div></header><section className="home-grid"><article className="active-card"><div className="card-heading"><div><p className="eyebrow">当前屏幕保护</p><h2>{active?.name ?? "还没有作品"}</h2></div>{active && <button className="ghost-button" onClick={() => setEditor(active)}>编辑作品</button>}</div>{active ? <Visual project={active} /> : <div className="empty-visual">前往资源库下载模板，或创建空白项目。</div>}<footer><kbd>{data.settings.launchShortcut.replace("CommandOrControl", "Ctrl / ⌘")}</kbd><span>启动覆盖式屏保</span></footer></article><article className="info-card"><span>⌁</span><p className="eyebrow">保护方式</p><h2>展示保护，不替代系统锁屏</h2><p>覆盖式屏保创建全屏置顶窗口，不会结束下载、渲染、同步或其他后台进程。</p><hr /><small>它不能可靠拦截 Alt + Tab、任务管理器或其他 Windows 系统入口。需要安全锁定请使用上方“安全锁定 Windows”。</small></article></section><section className="section"><div className="section-title"><div><p className="eyebrow">最近作品</p><h2>我的屏保库</h2></div><button className="text-button" onClick={() => setView("library")}>查看全部 →</button></div>{data.projects.length ? <div className="cards">{data.projects.slice(0, 3).map((p) => <Card key={p.id} project={p} active={p.id === data.activeProjectId} edit={() => setEditor(p)} start={() => launch(p.id)} activate={async () => { await api.setActive(p.id); await refresh(); }} remove={() => {}} />)}</div> : <div className="empty">你的私人屏保库还是空的。<button className="primary-button" onClick={() => setView("market")}>探索资源库</button></div>}</section></>}
 {view === "library" && <><header className="page-header"><div><p className="eyebrow">我的库</p><h1>每一份屏保，都是你的私有空间。</h1><p>从空白画布开始，或将资源库中的模板下载后继续编辑。</p></div><button className="primary-button" onClick={() => setShowNew(true)}>＋ 新建屏保</button></header>{data.projects.length ? <div className="cards library-cards">{data.projects.map((p) => <Card key={p.id} project={p} active={p.id === data.activeProjectId} edit={() => setEditor(p)} start={() => launch(p.id)} activate={async () => { await api.setActive(p.id); await refresh(); setNotice({ kind: "ok", text: "已设为当前屏保：" + p.name }); }} remove={async () => { if (confirm("删除“" + p.name + "”？")) { await api.deleteProject(p.id); await refresh(); } }} />)}</div> : <div className="empty tall"><h2>从一张空白画布开始</h2><p>添加文字、图片或时钟组件，构建自己的布局。</p><button className="primary-button" onClick={() => setShowNew(true)}>＋ 新建屏保</button></div>}</>}{view === "market" && <><header className="page-header"><div><p className="eyebrow">资源库</p><h1>从灵感开始，再变成你的。</h1><p>内置模板离线可用。下载到“我的库”后，便成为你可任意修改的私有作品。</p></div></header><div className="templates">{data.templates.map((p) => <article className="template" key={p.id}><Visual project={p} /><div><p className="eyebrow">内置模板</p><h2>{p.name}</h2><p>{p.description}</p><button className="primary-button" onClick={() => getTemplate(p)}>↓ 下载到我的库</button></div></article>)}</div></>}{view === "settings" && settings && <SettingsPanel data={data} settings={settings} setSettings={setSettings} save={async () => { try { await api.saveSettings(settings); await register(settings); await refresh(); setNotice({ kind: "ok", text: "快捷键已保存并注册" }); } catch (e) { error("快捷键没有保存：" + String(e)); await refresh(); } }} reset={async (a, p, q, n) => { await api.resetSecurity(a, p, q, n); await refresh(); setNotice({ kind: "ok", text: "保护密码已重设" }); }} />}</main>{showNew && <div className="modal-wrap"><form className="modal" onSubmit={(e) => { e.preventDefault(); make(); }}><button type="button" className="close" onClick={() => setShowNew(false)}>×</button><p className="eyebrow">从零开始</p><h2>新建屏幕保护</h2><p>创建后可以添加文字、图片和时钟组件。</p><label>屏保名称<input autoFocus value={name} onChange={(e) => setName(e.target.value)} /></label><div className="modal-actions"><button type="button" className="ghost-button" onClick={() => setShowNew(false)}>取消</button><button className="primary-button">创建空白项目</button></div></form></div>}{notice && <div className={"notice " + notice.kind}>{notice.kind === "ok" ? "✓" : "!"} {notice.text}</div>}</div>;
 }
 

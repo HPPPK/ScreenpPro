@@ -624,16 +624,23 @@ fn create_saver_windows(app: &AppHandle, project_id: &str) -> Result<(), String>
         let label = format!("saver-{index}");
         let size = monitor.size();
         let position = monitor.position();
-        WebviewWindowBuilder::new(app, &label, WebviewUrl::App("#/saver".into()))
-            .title("ScreenPro")
-            .decorations(false)
-            .always_on_top(true)
-            .skip_taskbar(true)
-            .transparent(false)
-            .position(position.x as f64, position.y as f64)
-            .inner_size(size.width as f64, size.height as f64)
-            .build()
-            .map_err(|err| format!("无法创建屏保窗口：{err}"))?;
+        let window = WebviewWindowBuilder::new(
+            app,
+            &label,
+            WebviewUrl::App(format!("index.html?screenproSaverProjectId={project_id}").into()),
+        )
+        .title("ScreenPro")
+        .decorations(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .transparent(false)
+        // Set the hash before React boots instead of relying on a fragment in WebviewUrl.
+        .initialization_script("window.location.hash = '#/saver';")
+        .position(position.x as f64, position.y as f64)
+        .inner_size(size.width as f64, size.height as f64)
+        .build()
+        .map_err(|err| format!("无法创建屏保窗口：{err}"))?;
+        let _ = window.set_focus();
         labels.push(label);
     }
     *state
@@ -696,6 +703,23 @@ fn saver_status(app: AppHandle) -> Result<bool, String> {
         .is_empty())
 }
 
+#[tauri::command]
+fn lock_system() -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let locked = unsafe { windows_sys::Win32::System::Shutdown::LockWorkStation() };
+        if locked == 0 {
+            return Err("Windows 未能启动系统锁定".into());
+        }
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err("当前版本仅提供 Windows 系统锁定；macOS 支持将在 macOS 构建时加入".into())
+    }
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -729,7 +753,8 @@ pub fn run() {
             get_asset_path,
             start_saver,
             end_saver,
-            saver_status
+            saver_status,
+            lock_system
         ])
         .run(tauri::generate_context!())
         .expect("启动 ScreenPro 时发生错误");

@@ -1,6 +1,6 @@
 [package]
 name = "screenpro"
-version = "0.1.0"
+version = "0.1.1"
 description = "ScreenPro - customizable desktop screen saver"
 authors = ["ScreenPro"]
 edition = "2021"

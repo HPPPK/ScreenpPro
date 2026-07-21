@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties, type FormEvent, type MouseEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent, type MouseEvent } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { check } from "@tauri-apps/plugin-updater";
@@ -15,22 +15,73 @@ const clockText = (format: string) => { const d = new Date(); return format.repl
 
 function Asset({ id, className = "", alt = "图片" }: { id?: string | null; className?: string; alt?: string }) {
   const [src, setSrc] = useState<string | null>(null);
-  useEffect(() => { let live = true; if (!id) { setSrc(null); return; } api.getAssetPath(id).then((path) => live && setSrc(convertFileSrc(path))).catch(() => live && setSrc(null)); return () => { live = false; }; }, [id]);
-  return src ? <img src={src} alt={alt} className={className} /> : <div className={"image-placeholder " + className}><span>▧</span><small>选择图片</small></div>;
+  const [loadFailed, setLoadFailed] = useState(false);
+
+  useEffect(() => {
+    let live = true;
+    setLoadFailed(false);
+    if (!id) {
+      setSrc(null);
+      return;
+    }
+    api.getAssetPath(id)
+      .then((path) => {
+        if (live) setSrc(convertFileSrc(path));
+      })
+      .catch((error) => {
+        console.error("无法读取 ScreenPro 私有图片资源", { assetId: id, error });
+        if (live) setSrc(null);
+      });
+    return () => { live = false; };
+  }, [id]);
+
+  if (src && !loadFailed) {
+    return <img src={src} alt={alt} className={className} onError={() => {
+      console.error("ScreenPro 图片无法在 WebView 中渲染", { assetId: id, src });
+      setLoadFailed(true);
+    }} />;
+  }
+
+  return <div className={"image-placeholder " + className} title={id ? "图片资源无法加载" : undefined}><span>▧</span><small>{id ? "图片无法加载" : "选择图片"}</small></div>;
 }
 
-function Piece({ item, selected, editable, onPick }: { item: SaverComponent; selected?: boolean; editable?: boolean; onPick?: (event: MouseEvent<HTMLDivElement>) => void }) {
+function projectBackgroundStyle(project: ScreenSaverProject): CSSProperties {
+  const bg = project.background ?? {};
+  return bg.kind === "solid"
+    ? { background: String(bg.start ?? "#0A1024") }
+    : { background: "linear-gradient(135deg, " + String(bg.start ?? "#0A1024") + ", " + String(bg.end ?? "#243B6B") + ")" };
+}
+
+function useCanvasScale() {
+  const ref = useRef<HTMLDivElement>(null);
+  const [scale, setScale] = useState(1);
+
+  useLayoutEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    const update = () => setScale(element.clientWidth / CANVAS.width || 1);
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
+  return { ref, scale };
+}
+
+function Piece({ item, scale, selected, editable, onPick }: { item: SaverComponent; scale: number; selected?: boolean; editable?: boolean; onPick?: (event: MouseEvent<HTMLDivElement>) => void }) {
   const [, tick] = useState(0); useEffect(() => { const t = setInterval(() => tick((n) => n + 1), 1000); return () => clearInterval(t); }, []);
   const p = item.props; const style: CSSProperties = { left: (item.x / CANVAS.width) * 100 + "%", top: (item.y / CANVAS.height) * 100 + "%", width: (item.width / CANVAS.width) * 100 + "%", height: (item.height / CANVAS.height) * 100 + "%" };
   const cls = "piece " + (selected ? "selected " : "") + (editable ? "editable" : "");
-  if (item.componentType === "text") return <div style={style} className={cls} onMouseDown={onPick}><div className="text-piece" style={{ color: String(p.color ?? "#fff"), fontSize: "clamp(11px, " + (Number(p.fontSize ?? 48) / CANVAS.width) * 100 + "vw, " + Number(p.fontSize ?? 48) + "px)", fontWeight: Number(p.fontWeight ?? 600), textAlign: (p.align as "left" | "center" | "right") ?? "center" }}>{String(p.content ?? "文字")}</div></div>;
-  if (item.componentType === "clock") return <div style={style} className={cls} onMouseDown={onPick}><div className="clock-piece" style={{ color: String(p.color ?? "#fff"), textAlign: (p.align as "left" | "center" | "right") ?? "center" }}><strong style={{ fontSize: "clamp(20px, " + (Number(p.fontSize ?? 120) / CANVAS.width) * 100 + "vw, " + Number(p.fontSize ?? 120) + "px)" }}>{clockText(String(p.format ?? "HH:mm"))}</strong>{p.showDate !== false && <span>{new Intl.DateTimeFormat("zh-CN", { weekday: "long", month: "long", day: "numeric" }).format(new Date())}</span>}</div></div>;
+  if (item.componentType === "text") return <div style={style} className={cls} onMouseDown={onPick}><div className="text-piece" style={{ color: String(p.color ?? "#fff"), fontSize: Number(p.fontSize ?? 48) * scale, fontWeight: Number(p.fontWeight ?? 600), textAlign: (p.align as "left" | "center" | "right") ?? "center" }}>{String(p.content ?? "文字")}</div></div>;
+  if (item.componentType === "clock") { const fontSize = Number(p.fontSize ?? 120) * scale; return <div style={style} className={cls} onMouseDown={onPick}><div className="clock-piece" style={{ color: String(p.color ?? "#fff"), textAlign: (p.align as "left" | "center" | "right") ?? "center" }}><strong style={{ fontSize }}>{clockText(String(p.format ?? "HH:mm"))}</strong>{p.showDate !== false && <span style={{ fontSize: fontSize * 0.17 }}>{new Intl.DateTimeFormat("zh-CN", { weekday: "long", month: "long", day: "numeric" }).format(new Date())}</span>}</div></div>; }
   return <div style={style} className={cls} onMouseDown={onPick}><Asset id={p.assetId as string | null} className="image-piece" /></div>;
 }
 
 function Visual({ project, editable, selectedId, onPick }: { project: ScreenSaverProject; editable?: boolean; selectedId?: string | null; onPick?: (event: MouseEvent<HTMLDivElement>, item: SaverComponent) => void }) {
-  const bg = project.background ?? {}; const style: CSSProperties = bg.kind === "solid" ? { background: String(bg.start ?? "#0A1024") } : { background: "linear-gradient(135deg, " + String(bg.start ?? "#0A1024") + ", " + String(bg.end ?? "#243B6B") + ")" };
-  return <div className="visual" style={style}>{bg.imageAssetId && <Asset id={bg.imageAssetId} className="background-image" alt="背景" />}{project.elements.map((item) => <Piece key={item.id} item={item} editable={editable} selected={item.id === selectedId} onPick={onPick ? (event) => onPick(event, item) : undefined} />)}</div>;
+  const { ref, scale } = useCanvasScale();
+  const bg = project.background ?? {};
+  return <div ref={ref} className="visual" style={projectBackgroundStyle(project)}>{bg.imageAssetId && <Asset id={bg.imageAssetId} className="background-image" alt="背景" />}{project.elements.map((item) => <Piece key={item.id} item={item} scale={scale} editable={editable} selected={item.id === selectedId} onPick={onPick ? (event) => onPick(event, item) : undefined} />)}</div>;
 }
 
 function SecuritySetup({ done }: { done: () => void }) {
@@ -70,16 +121,22 @@ function Saver() {
 
   useEffect(() => {
     load();
-    const wake = () => setShowUnlock(true);
-    window.addEventListener("keydown", wake);
-    window.addEventListener("pointerdown", wake);
-    window.addEventListener("pointermove", wake);
-    return () => {
-      window.removeEventListener("keydown", wake);
-      window.removeEventListener("pointerdown", wake);
-      window.removeEventListener("pointermove", wake);
-    };
   }, []);
+
+  useEffect(() => {
+    const wake = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape" && showUnlock) {
+        event.preventDefault();
+        setPassword("");
+        setError("");
+        setShowUnlock(false);
+        return;
+      }
+      if (!showUnlock) setShowUnlock(true);
+    };
+    window.addEventListener("keydown", wake);
+    return () => window.removeEventListener("keydown", wake);
+  }, [showUnlock]);
 
   if (loadError) return <main className="saver-shell saver-state"><div><div className="brand-mark">S</div><h1>屏保加载失败</h1><p>{loadError}</p><button className="ghost-button" onClick={load}>重试加载</button></div></main>;
   if (!data) return <main className="saver-shell saver-state"><div><div className="brand-mark">S</div><p>正在加载屏保…</p></div></main>;
@@ -107,9 +164,9 @@ function Saver() {
     }
   };
 
-  return <main className="saver-shell" onPointerDown={() => setShowUnlock(true)} onPointerMove={() => setShowUnlock(true)}>
-    <Visual project={project} />
-    {!showUnlock && <div className="saver-hint">移动鼠标、点击或按任意键以显示解锁界面</div>}
+  return <main className="saver-shell" style={projectBackgroundStyle(project)}>
+    <div className="saver-stage"><Visual project={project} /></div>
+    {!showUnlock && <div className="saver-hint">按任意键以显示解锁界面</div>}
     {showUnlock && <div className="unlock-shade"><form className="unlock-card" onPointerDown={(event) => event.stopPropagation()} onSubmit={unlock}>
       <div className="brand-mark">S</div><p className="eyebrow">SCREENPRO 覆盖式屏保</p><h1>输入密码以退出</h1>
       <p>后台任务仍在继续运行。此模式不能替代 Windows 系统锁屏。</p>
@@ -145,10 +202,98 @@ function UpdatePanel() {
   };
   return <section className="update-card"><p className="eyebrow">版本更新</p><h2>GitHub Releases</h2><p>当前版本：<b>v{version}</b></p><p className="update-message">{message}</p><div className="update-actions"><button className="primary-button" disabled={busy} onClick={checkForUpdate}>{busy ? "处理中…" : "检查更新"}</button>{available && <button className="ghost-button" disabled={busy} onClick={install}>下载并安装 v{available.version}</button>}</div><small>仅接受由 ScreenPro 发布密钥签名的更新包。</small></section>;
 }
-function SettingsPanel({ data, settings, setSettings, save, reset }: { data: BootstrapData; settings: AppSettings; setSettings: (s: AppSettings) => void; save: () => Promise<void>; reset: (answer: string, password: string, question: string, newAnswer: string) => Promise<void> }) {
- const [openReset, setOpenReset] = useState(false); const [answer, setAnswer] = useState(""); const [password, setPassword] = useState(""); const [question, setQuestion] = useState(data.securityQuestion ?? ""); const [newAnswer, setNewAnswer] = useState(""); const pairs = Object.entries(settings.libraryShortcuts);
- const updatePair = (index: number, isKey: boolean, value: string) => setSettings({ ...settings, libraryShortcuts: Object.fromEntries(pairs.map(([key, id], n) => n === index ? (isKey ? [value, id] : [key, value]) : [key, id])) });
- return <><header className="page-header"><div><p className="eyebrow">设置</p><h1>决定你的保护方式。</h1><p>快捷键在应用后台运行时仍可使用。请避开系统及其他软件占用的组合键。</p></div></header><div className="settings"><section><p className="eyebrow">启动快捷键</p><h2>当前屏保</h2><label>全局快捷键<input value={settings.launchShortcut} onChange={(e) => setSettings({ ...settings, launchShortcut: e.target.value })} /></label><small>例如：CommandOrControl+Alt+Shift+S</small><button className="primary-button" onClick={save}>保存并注册快捷键</button></section><section><p className="eyebrow">快捷键库</p><h2>一键启动特定作品</h2><p>可设置最多 9 个组合键，直接启动“我的库”中的指定屏保。</p>{pairs.map(([key, id], index) => <div className="shortcut" key={index}><input value={key} onChange={(e) => updatePair(index, true, e.target.value)} /><select value={id} onChange={(e) => updatePair(index, false, e.target.value)}>{data.projects.map((p) => <option value={p.id} key={p.id}>{p.name}</option>)}</select><button className="danger" onClick={() => setSettings({ ...settings, libraryShortcuts: Object.fromEntries(pairs.filter((_, n) => n !== index)) })}>×</button></div>)}<button className="ghost-button" disabled={pairs.length >= 9 || !data.projects.length} onClick={() => setSettings({ ...settings, libraryShortcuts: { ...settings.libraryShortcuts, ["CommandOrControl+Alt+Shift+" + (pairs.length + 1)]: data.projects[0].id } })}>＋ 添加作品快捷键</button></section><section><p className="eyebrow">退出验证</p><h2>应用独立密码</h2><p>安全问题：{data.securityQuestion}</p><button className="ghost-button" onClick={() => setOpenReset(!openReset)}>重设密码</button>{openReset && <div className="reset"><label>原安全问题答案<input type="password" value={answer} onChange={(e) => setAnswer(e.target.value)} /></label><label>新密码<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} /></label><label>新安全问题<input value={question} onChange={(e) => setQuestion(e.target.value)} /></label><label>新答案<input type="password" value={newAnswer} onChange={(e) => setNewAnswer(e.target.value)} /></label><button className="primary-button" onClick={() => reset(answer, password, question, newAnswer)}>确认重设</button></div>}</section><UpdatePanel /></div></>;
+const shortcutLabels: Record<string, string> = {
+  CommandOrControl: "Ctrl / ⌘",
+  Alt: "Alt / ⌥",
+  Shift: "Shift / ⇧",
+  Space: "空格",
+  Enter: "Enter",
+  Tab: "Tab",
+  Esc: "Esc",
+  Backspace: "Backspace",
+  Delete: "Delete",
+  PageUp: "Page Up",
+  PageDown: "Page Down",
+  ArrowUp: "↑",
+  ArrowDown: "↓",
+  ArrowLeft: "←",
+  ArrowRight: "→",
+};
+
+const modifierKeys = new Set(["Control", "Shift", "Alt", "Meta"]);
+
+function shortcutMainKey(event: KeyboardEvent<HTMLButtonElement>) {
+  if (/^Key[A-Z]$/.test(event.code)) return event.code.slice(3);
+  if (/^Digit\d$/.test(event.code)) return event.code.slice(5);
+  if (/^Numpad\d$/.test(event.code)) return event.code;
+  if (/^F(?:[1-9]|1[0-9]|2[0-4])$/.test(event.key)) return event.key.toUpperCase();
+  const aliases: Record<string, string> = {
+    Space: "Space", Enter: "Enter", Tab: "Tab", Escape: "Esc", Backspace: "Backspace", Delete: "Delete",
+    Insert: "Insert", Home: "Home", End: "End", PageUp: "PageUp", PageDown: "PageDown",
+    ArrowUp: "ArrowUp", ArrowDown: "ArrowDown", ArrowLeft: "ArrowLeft", ArrowRight: "ArrowRight",
+    NumpadAdd: "NumpadAdd", NumpadSubtract: "NumpadSubtract", NumpadMultiply: "NumpadMultiply", NumpadDivide: "NumpadDivide",
+  };
+  return aliases[event.code] ?? null;
+}
+
+function shortcutLabel(shortcut: string) {
+  return shortcut.split("+").map((part) => shortcutLabels[part] ?? part).join(" + ");
+}
+
+function nextLibraryShortcut(pairs: [string, string][]) {
+  return Array.from({ length: 9 }, (_, index) => `CommandOrControl+Alt+Shift+${index + 1}`)
+    .find((shortcut) => !pairs.some(([key]) => key.toLowerCase() === shortcut.toLowerCase())) ?? "";
+}
+
+function ShortcutRecorder({ value, onChange, onCaptureChange, label }: { value: string; onChange: (value: string) => void; onCaptureChange?: (recording: boolean) => Promise<void>; label: string }) {
+  const [recording, setRecording] = useState(false);
+  const [arming, setArming] = useState(false);
+  const [message, setMessage] = useState("");
+  const finish = async () => { setRecording(false); await onCaptureChange?.(false); };
+  const begin = async () => {
+    setMessage("正在临时停用已注册的快捷键…");
+    setArming(true);
+    try {
+      await onCaptureChange?.(true);
+      setMessage("");
+      setRecording(true);
+    } catch {
+      setMessage("无法开始录制，请稍后重试");
+    } finally {
+      setArming(false);
+    }
+  };
+  const onKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.repeat) return;
+    if (event.key === "Escape" && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) { void finish(); return; }
+    const key = shortcutMainKey(event);
+    if (!key) {
+      if (modifierKeys.has(event.key)) return setMessage("继续按下一个字母、数字或功能键");
+      return setMessage("此按键暂不支持，请使用字母、数字、F 键、方向键或常用功能键");
+    }
+    const modifiers = [
+      ...(event.ctrlKey || event.metaKey ? ["CommandOrControl"] : []),
+      ...(event.altKey ? ["Alt"] : []),
+      ...(event.shiftKey ? ["Shift"] : []),
+    ];
+    if (!modifiers.length) return setMessage("请至少同时按下 Ctrl / ⌘、Alt 或 Shift 之一");
+    onChange([...modifiers, key].join("+"));
+    void finish();
+  };
+  return <div className="shortcut-recorder-wrap"><button type="button" disabled={arming} className={"shortcut-recorder " + (recording ? "recording" : "")} aria-label={label} onClick={() => { if (!arming) void (recording ? finish() : begin()); }} onKeyDown={onKeyDown} onBlur={() => { if (recording) void finish(); }}>
+    {arming ? "正在准备录制…" : recording ? "正在录制… 按下组合键" : shortcutLabel(value)}
+  </button><small>{message || (recording ? "按 Esc 取消录制" : "点击后直接按下新的组合键")}</small></div>;
+}
+
+function SettingsPanel({ data, settings, setSettings, save, reset, onCaptureChange }: { data: BootstrapData; settings: AppSettings; setSettings: (s: AppSettings) => void; save: () => Promise<void>; reset: (answer: string, password: string, question: string, newAnswer: string) => Promise<void>; onCaptureChange: (recording: boolean) => Promise<void> }) {
+ const [openReset, setOpenReset] = useState(false); const [answer, setAnswer] = useState(""); const [password, setPassword] = useState(""); const [question, setQuestion] = useState(data.securityQuestion ?? ""); const [newAnswer, setNewAnswer] = useState(""); const [shortcutError, setShortcutError] = useState(""); const pairs = Object.entries(settings.libraryShortcuts) as [string, string][];
+ const duplicate = (value: string, except?: number) => settings.launchShortcut.toLowerCase() === value.toLowerCase() || pairs.some(([key], index) => index !== except && key.toLowerCase() === value.toLowerCase());
+ const updateLaunch = (launchShortcut: string) => { if (pairs.some(([key]) => key.toLowerCase() === launchShortcut.toLowerCase())) return setShortcutError(`“${shortcutLabel(launchShortcut)}” 已用于作品快捷键`); setShortcutError(""); setSettings({ ...settings, launchShortcut }); };
+ const updatePair = (index: number, isKey: boolean, value: string) => { if (isKey && duplicate(value, index)) return setShortcutError(`“${shortcutLabel(value)}” 已被使用，请录制其他组合键`); setShortcutError(""); setSettings({ ...settings, libraryShortcuts: Object.fromEntries(pairs.map(([key, id], n) => n === index ? (isKey ? [value, id] : [key, value]) : [key, id])) }); };
+ const addLibraryShortcut = () => { const shortcut = nextLibraryShortcut(pairs); if (shortcut) setSettings({ ...settings, libraryShortcuts: { ...settings.libraryShortcuts, [shortcut]: data.projects[0].id } }); };
+ return <><header className="page-header"><div><p className="eyebrow">设置</p><h1>决定你的保护方式。</h1><p>快捷键在应用后台运行时仍可使用。请避开系统及其他软件占用的组合键。</p></div></header><div className="settings"><section><p className="eyebrow">启动快捷键</p><h2>当前屏保</h2><label>全局快捷键<ShortcutRecorder label="录制启动当前屏保的快捷键" value={settings.launchShortcut} onChange={updateLaunch} onCaptureChange={onCaptureChange} /></label><small>点击后直接按组合键；例如按住 Ctrl + Alt + Shift，再按 S。</small>{shortcutError && <p className="shortcut-error" role="alert">{shortcutError}</p>}<button className="primary-button" onClick={save}>保存并注册快捷键</button></section><section><p className="eyebrow">快捷键库</p><h2>一键启动特定作品</h2><p>可设置最多 9 个组合键，直接启动“我的库”中的指定屏保。</p>{pairs.map(([key, id], index) => <div className="shortcut" key={key}><ShortcutRecorder label={`录制第 ${index + 1} 个作品快捷键`} value={key} onChange={(value) => updatePair(index, true, value)} onCaptureChange={onCaptureChange} /><select value={id} aria-label={`选择第 ${index + 1} 个快捷键对应的屏保`} onChange={(e) => updatePair(index, false, e.target.value)}>{data.projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}</select><button type="button" className="danger" aria-label="删除作品快捷键" onClick={() => setSettings({ ...settings, libraryShortcuts: Object.fromEntries(pairs.filter((_, n) => n !== index)) })}>×</button></div>)}{shortcutError && <p className="shortcut-error" role="alert">{shortcutError}</p>}<button className="ghost-button" disabled={pairs.length >= 9 || !data.projects.length} onClick={addLibraryShortcut}>＋ 添加作品快捷键</button></section><section><p className="eyebrow">退出验证</p><h2>应用独立密码</h2><p>安全问题：{data.securityQuestion}</p><button className="ghost-button" onClick={() => setOpenReset(!openReset)}>重设密码</button>{openReset && <div className="reset"><label>原安全问题答案<input type="password" value={answer} onChange={(e) => setAnswer(e.target.value)} /></label><label>新密码<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} /></label><label>新安全问题<input value={question} onChange={(e) => setQuestion(e.target.value)} /></label><label>新答案<input type="password" value={newAnswer} onChange={(e) => setNewAnswer(e.target.value)} /></label><button className="primary-button" onClick={() => reset(answer, password, question, newAnswer)}>确认重设</button></div>}</section><UpdatePanel /></div></>;
 }
 
 function App() {
@@ -156,12 +301,21 @@ function App() {
   const refresh = async () => { const next = await api.bootstrap(); setData(next); setSettings(next.settings); };
   useEffect(() => { refresh().catch((e) => setNotice({ kind: "bad", text: String(e) })); }, []); useEffect(() => { const syncHash = () => setHash(window.location.hash); window.addEventListener("hashchange", syncHash); return () => window.removeEventListener("hashchange", syncHash); }, []); useEffect(() => { if (!notice) return; const t = setTimeout(() => setNotice(null), 3500); return () => clearTimeout(t); }, [notice]);
   const error = (e: unknown) => setNotice({ kind: "bad", text: String(e).replace(/^Error:\s*/, "") });
-  const register = async (next: AppSettings) => { await globalShortcut.unregisterAll(); const pairs = [{ key: next.launchShortcut, id: undefined }, ...Object.entries(next.libraryShortcuts).map(([key, id]) => ({ key, id }))]; for (const pair of pairs) await globalShortcut.register(pair.key, () => api.startSaver(pair.id).then(() => { window.location.hash = "#/saver"; }).catch(() => undefined)); };
+  const register = async (next: AppSettings) => {
+    await globalShortcut.unregisterAll();
+    try {
+      const pairs = [{ key: next.launchShortcut, id: undefined }, ...Object.entries(next.libraryShortcuts).map(([key, id]) => ({ key, id }))];
+      for (const pair of pairs) await globalShortcut.register(pair.key, () => api.startSaver(pair.id).then(() => { window.location.hash = "#/saver"; }).catch(() => undefined));
+    } catch (reason) {
+      await globalShortcut.unregisterAll().catch(() => undefined);
+      throw reason;
+    }
+  };
   useEffect(() => { if (data?.hasSecurity) register(data.settings).catch(() => undefined); return () => { globalShortcut.unregisterAll().catch(() => undefined); }; }, [data?.hasSecurity]);
   const isSaverWindow = hash.startsWith("#/saver"); if (isSaverWindow) return <Saver />; if (!data) return <main className="loading"><div className="brand-mark">S</div>正在打开 ScreenPro…</main>; if (!data.hasSecurity) return <SecuritySetup done={refresh} />; if (editor) return <Editor source={editor} close={() => setEditor(null)} save={async (project) => { try { await api.saveProject(project); await refresh(); setEditor(null); setNotice({ kind: "ok", text: "作品已保存到我的库" }); } catch (e) { error(e); } }} />;
   const active = data.projects.find((p) => p.id === data.activeProjectId); const launch = async (id?: string) => { try { await api.startSaver(id); window.location.hash = "#/saver"; } catch (e) { error(e); } }; const make = async () => { try { const p = await api.createBlank(name); await refresh(); setShowNew(false); setEditor(p); } catch (e) { error(e); } }; const getTemplate = async (template: ScreenSaverProject) => { try { const p = await api.cloneTemplate(template.id); await refresh(); setEditor(p); setNotice({ kind: "ok", text: "已下载到我的库，可以开始编辑" }); } catch (e) { error(e); } };
   return <div className="app"><aside className="sidebar"><div className="app-brand"><div className="brand-mark">S</div><div><strong>ScreenPro</strong><small>Screen saver studio</small></div></div><nav>{nav.map((item) => <button key={item.id} className={view === item.id ? "nav active" : "nav"} onClick={() => setView(item.id)}><span>{item.icon}</span>{item.label}</button>)}</nav><div className="side-foot"><div>◉ <span><b>本地保护已启用</b><small>不终止后台程序</small></span></div><small>v0.1.5 · Windows MVP</small></div></aside><main className="content">{view === "home" && <><header className="page-header"><div><p className="eyebrow">工作台</p><h1>让屏幕在离开时，仍然有温度。</h1><p>选择一份作品，按下快捷键。覆盖式屏保会让当前工作台全屏显示，同时让后台工作继续运行；需要真正锁定时，请使用 Windows 系统锁定。</p></div><div className="launch-actions"><button className="secure-button" onClick={async () => { try { await api.lockSystem(); } catch (e) { error(e); } }}>🔒 安全锁定 Windows</button><button className="primary-button" disabled={!active} onClick={() => launch()}>▶ 启动覆盖式屏保</button></div></header><section className="home-grid"><article className="active-card"><div className="card-heading"><div><p className="eyebrow">当前屏幕保护</p><h2>{active?.name ?? "还没有作品"}</h2></div>{active && <button className="ghost-button" onClick={() => setEditor(active)}>编辑作品</button>}</div>{active ? <Visual project={active} /> : <div className="empty-visual">前往资源库下载模板，或创建空白项目。</div>}<footer><kbd>{data.settings.launchShortcut.replace("CommandOrControl", "Ctrl / ⌘")}</kbd><span>启动覆盖式屏保</span></footer></article><article className="info-card"><span>⌁</span><p className="eyebrow">保护方式</p><h2>展示保护，不替代系统锁屏</h2><p>当前稳定版复用工作台进入全屏覆盖，不会结束下载、渲染、同步或其他后台进程。多显示器独立窗口覆盖将在稳定后恢复。</p><hr /><small>它不能可靠拦截 Alt + Tab、任务管理器或其他 Windows 系统入口。需要安全锁定请使用上方“安全锁定 Windows”。</small></article></section><section className="section"><div className="section-title"><div><p className="eyebrow">最近作品</p><h2>我的屏保库</h2></div><button className="text-button" onClick={() => setView("library")}>查看全部 →</button></div>{data.projects.length ? <div className="cards">{data.projects.slice(0, 3).map((p) => <Card key={p.id} project={p} active={p.id === data.activeProjectId} edit={() => setEditor(p)} start={() => launch(p.id)} activate={async () => { await api.setActive(p.id); await refresh(); }} remove={() => {}} />)}</div> : <div className="empty">你的私人屏保库还是空的。<button className="primary-button" onClick={() => setView("market")}>探索资源库</button></div>}</section></>}
-{view === "library" && <><header className="page-header"><div><p className="eyebrow">我的库</p><h1>每一份屏保，都是你的私有空间。</h1><p>从空白画布开始，或将资源库中的模板下载后继续编辑。</p></div><button className="primary-button" onClick={() => setShowNew(true)}>＋ 新建屏保</button></header>{data.projects.length ? <div className="cards library-cards">{data.projects.map((p) => <Card key={p.id} project={p} active={p.id === data.activeProjectId} edit={() => setEditor(p)} start={() => launch(p.id)} activate={async () => { await api.setActive(p.id); await refresh(); setNotice({ kind: "ok", text: "已设为当前屏保：" + p.name }); }} remove={async () => { if (confirm("删除“" + p.name + "”？")) { await api.deleteProject(p.id); await refresh(); } }} />)}</div> : <div className="empty tall"><h2>从一张空白画布开始</h2><p>添加文字、图片或时钟组件，构建自己的布局。</p><button className="primary-button" onClick={() => setShowNew(true)}>＋ 新建屏保</button></div>}</>}{view === "market" && <><header className="page-header"><div><p className="eyebrow">资源库</p><h1>从灵感开始，再变成你的。</h1><p>内置模板离线可用。下载到“我的库”后，便成为你可任意修改的私有作品。</p></div></header><div className="templates">{data.templates.map((p) => <article className="template" key={p.id}><Visual project={p} /><div><p className="eyebrow">内置模板</p><h2>{p.name}</h2><p>{p.description}</p><button className="primary-button" onClick={() => getTemplate(p)}>↓ 下载到我的库</button></div></article>)}</div></>}{view === "settings" && settings && <SettingsPanel data={data} settings={settings} setSettings={setSettings} save={async () => { try { await api.saveSettings(settings); await register(settings); await refresh(); setNotice({ kind: "ok", text: "快捷键已保存并注册" }); } catch (e) { error("快捷键没有保存：" + String(e)); await refresh(); } }} reset={async (a, p, q, n) => { await api.resetSecurity(a, p, q, n); await refresh(); setNotice({ kind: "ok", text: "保护密码已重设" }); }} />}</main>{showNew && <div className="modal-wrap"><form className="modal" onSubmit={(e) => { e.preventDefault(); make(); }}><button type="button" className="close" onClick={() => setShowNew(false)}>×</button><p className="eyebrow">从零开始</p><h2>新建屏幕保护</h2><p>创建后可以添加文字、图片和时钟组件。</p><label>屏保名称<input autoFocus value={name} onChange={(e) => setName(e.target.value)} /></label><div className="modal-actions"><button type="button" className="ghost-button" onClick={() => setShowNew(false)}>取消</button><button className="primary-button">创建空白项目</button></div></form></div>}{notice && <div className={"notice " + notice.kind}>{notice.kind === "ok" ? "✓" : "!"} {notice.text}</div>}</div>;
+{view === "library" && <><header className="page-header"><div><p className="eyebrow">我的库</p><h1>每一份屏保，都是你的私有空间。</h1><p>从空白画布开始，或将资源库中的模板下载后继续编辑。</p></div><button className="primary-button" onClick={() => setShowNew(true)}>＋ 新建屏保</button></header>{data.projects.length ? <div className="cards library-cards">{data.projects.map((p) => <Card key={p.id} project={p} active={p.id === data.activeProjectId} edit={() => setEditor(p)} start={() => launch(p.id)} activate={async () => { await api.setActive(p.id); await refresh(); setNotice({ kind: "ok", text: "已设为当前屏保：" + p.name }); }} remove={async () => { if (confirm("删除“" + p.name + "”？")) { await api.deleteProject(p.id); await refresh(); } }} />)}</div> : <div className="empty tall"><h2>从一张空白画布开始</h2><p>添加文字、图片或时钟组件，构建自己的布局。</p><button className="primary-button" onClick={() => setShowNew(true)}>＋ 新建屏保</button></div>}</>}{view === "market" && <><header className="page-header"><div><p className="eyebrow">资源库</p><h1>从灵感开始，再变成你的。</h1><p>内置模板离线可用。下载到“我的库”后，便成为你可任意修改的私有作品。</p></div></header><div className="templates">{data.templates.map((p) => <article className="template" key={p.id}><Visual project={p} /><div><p className="eyebrow">内置模板</p><h2>{p.name}</h2><p>{p.description}</p><button className="primary-button" onClick={() => getTemplate(p)}>↓ 下载到我的库</button></div></article>)}</div></>}{view === "settings" && settings && <SettingsPanel data={data} settings={settings} setSettings={setSettings} save={async () => { const previous = data.settings; try { await register(settings); await api.saveSettings(settings); await refresh(); setNotice({ kind: "ok", text: "快捷键已保存并注册" }); } catch (e) { await register(previous).catch(() => undefined); error("快捷键没有保存，已恢复原有绑定：" + String(e)); await refresh(); } }} onCaptureChange={async (recording) => { if (recording) await globalShortcut.unregisterAll(); else await register(data.settings); }} reset={async (a, p, q, n) => { await api.resetSecurity(a, p, q, n); await refresh(); setNotice({ kind: "ok", text: "保护密码已重设" }); }} />}</main>{showNew && <div className="modal-wrap"><form className="modal" onSubmit={(e) => { e.preventDefault(); make(); }}><button type="button" className="close" onClick={() => setShowNew(false)}>×</button><p className="eyebrow">从零开始</p><h2>新建屏幕保护</h2><p>创建后可以添加文字、图片和时钟组件。</p><label>屏保名称<input autoFocus value={name} onChange={(e) => setName(e.target.value)} /></label><div className="modal-actions"><button type="button" className="ghost-button" onClick={() => setShowNew(false)}>取消</button><button className="primary-button">创建空白项目</button></div></form></div>}{notice && <div className={"notice " + notice.kind}>{notice.kind === "ok" ? "✓" : "!"} {notice.text}</div>}</div>;
 }
 
 export default App;

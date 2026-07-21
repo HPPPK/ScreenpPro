@@ -10,9 +10,9 @@ use std::{
     fs,
     path::PathBuf,
     sync::Mutex,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, WebviewWindow, WindowEvent};
 use uuid::Uuid;
 
 const STORE_FILE: &str = "screenpro-store.json";
@@ -110,10 +110,18 @@ impl Default for Store {
     }
 }
 
+#[derive(Debug, Clone)]
+struct WorkbenchWindowState {
+    position: PhysicalPosition<i32>,
+    size: PhysicalSize<u32>,
+    maximized: bool,
+}
+
 struct AppState {
     store: Mutex<Store>,
     saver_active: Mutex<bool>,
     saver_project_id: Mutex<Option<String>>,
+    workbench_window_state: Mutex<Option<WorkbenchWindowState>>,
 }
 
 fn default_background() -> Value {
@@ -598,6 +606,87 @@ fn find_project(app: &AppHandle, project_id: &str) -> Result<ScreenSaverProject,
         .ok_or_else(|| "找不到屏保项目".into())
 }
 
+fn restore_workbench_window(
+    main: &WebviewWindow,
+    snapshot: Option<WorkbenchWindowState>,
+) -> Result<(), String> {
+    let _ = main.set_fullscreen(false);
+    main.set_always_on_top(false)
+        .map_err(|err| format!("无法恢复工作台窗口层级：{err}"))?;
+    main.set_decorations(true)
+        .map_err(|err| format!("无法恢复工作台窗口边框：{err}"))?;
+    main.set_resizable(true)
+        .map_err(|err| format!("无法恢复工作台窗口尺寸：{err}"))?;
+
+    if let Some(snapshot) = snapshot {
+        let _ = main.unmaximize();
+        main.set_size(snapshot.size)
+            .map_err(|err| format!("无法恢复工作台窗口大小：{err}"))?;
+        main.set_position(snapshot.position)
+            .map_err(|err| format!("无法恢复工作台窗口位置：{err}"))?;
+        if snapshot.maximized {
+            main.maximize()
+                .map_err(|err| format!("无法恢复工作台最大化状态：{err}"))?;
+        }
+    }
+
+    let _ = main.show();
+    let _ = main.unminimize();
+    let _ = main.set_focus();
+    Ok(())
+}
+
+fn cover_current_monitor(main: &WebviewWindow) -> Result<(), String> {
+    let monitor = main
+        .current_monitor()
+        .map_err(|err| format!("无法读取当前显示器：{err}"))?
+        .or(main
+            .primary_monitor()
+            .map_err(|err| format!("无法读取主显示器：{err}"))?)
+        .ok_or("没有检测到可用显示器")?;
+
+    // Windows 上 WebView2 的 `set_fullscreen(true)` 在无边框窗口场景可能只保留原窗口尺寸。
+    // 这里明确使用当前显示器的物理坐标和物理尺寸，以保证窗口覆盖整个显示器。
+    let _ = main.set_fullscreen(false);
+    let _ = main.unmaximize();
+    main.set_decorations(false)
+        .map_err(|err| format!("无法移除屏保窗口边框：{err}"))?;
+    main.set_position(*monitor.position())
+        .map_err(|err| format!("无法定位屏保窗口：{err}"))?;
+    main.set_size(*monitor.size())
+        .map_err(|err| format!("无法铺满屏保窗口：{err}"))?;
+    main.set_resizable(false)
+        .map_err(|err| format!("无法锁定屏保窗口尺寸：{err}"))?;
+    main.set_always_on_top(true)
+        .map_err(|err| format!("无法置顶屏保窗口：{err}"))?;
+    main.show()
+        .map_err(|err| format!("无法显示屏保窗口：{err}"))?;
+    let _ = main.unminimize();
+    main.set_focus()
+        .map_err(|err| format!("无法聚焦屏保窗口：{err}"))?;
+    Ok(())
+}
+
+fn reassert_saver_window(app: AppHandle) {
+    std::thread::spawn(move || {
+        // Let Windows finish the Show Desktop / Task View / close-request transition first,
+        // then bring the active saver back to the foreground.
+        std::thread::sleep(Duration::from_millis(160));
+        let active = app
+            .state::<AppState>()
+            .saver_active
+            .lock()
+            .map(|active| *active)
+            .unwrap_or(false);
+        if !active {
+            return;
+        }
+        if let Some(main) = app.get_webview_window("main") {
+            let _ = cover_current_monitor(&main);
+        }
+    });
+}
+
 fn activate_main_saver(app: &AppHandle, project_id: &str) -> Result<(), String> {
     find_project(app, project_id)?;
     let state = app.state::<AppState>();
@@ -616,22 +705,34 @@ fn activate_main_saver(app: &AppHandle, project_id: &str) -> Result<(), String> 
         .lock()
         .map_err(|_| "屏保状态异常".to_string())? = Some(project_id.to_string());
 
+    let main = app.get_webview_window("main").ok_or("找不到主工作台窗口")?;
     let result = (|| -> Result<(), String> {
-        let main = app.get_webview_window("main").ok_or("找不到主工作台窗口")?;
-        // Reuse the already-running WebView instead of constructing another WebView2 process.
-        // That avoids the Windows AppHang seen when the old multi-window saver started.
-        main.set_always_on_top(true)
-            .map_err(|err| format!("无法置顶屏保窗口：{err}"))?;
-        main.set_decorations(false)
-            .map_err(|err| format!("无法移除屏保窗口边框：{err}"))?;
-        main.set_resizable(false)
-            .map_err(|err| format!("无法锁定屏保窗口尺寸：{err}"))?;
-        main.set_fullscreen(true)
-            .map_err(|err| format!("无法切换到全屏屏保：{err}"))?;
-        Ok(())
+        let snapshot = WorkbenchWindowState {
+            position: main
+                .outer_position()
+                .map_err(|err| format!("无法读取工作台窗口位置：{err}"))?,
+            size: main
+                .inner_size()
+                .map_err(|err| format!("无法读取工作台窗口大小：{err}"))?,
+            maximized: main
+                .is_maximized()
+                .map_err(|err| format!("无法读取工作台窗口状态：{err}"))?,
+        };
+        *state
+            .workbench_window_state
+            .lock()
+            .map_err(|_| "屏保状态异常".to_string())? = Some(snapshot);
+
+        cover_current_monitor(&main)
     })();
 
-    if result.is_err() {
+    if let Err(error) = result {
+        let snapshot = state
+            .workbench_window_state
+            .lock()
+            .map_err(|_| "屏保状态异常".to_string())?
+            .take();
+        let _ = restore_workbench_window(&main, snapshot);
         *state
             .saver_active
             .lock()
@@ -640,8 +741,9 @@ fn activate_main_saver(app: &AppHandle, project_id: &str) -> Result<(), String> 
             .saver_project_id
             .lock()
             .map_err(|_| "屏保状态异常".to_string())? = None;
+        return Err(error);
     }
-    result
+    Ok(())
 }
 
 #[tauri::command]
@@ -674,19 +776,14 @@ fn end_saver(app: AppHandle) -> Result<(), String> {
         .saver_project_id
         .lock()
         .map_err(|_| "屏保状态异常".to_string())? = None;
+    let snapshot = state
+        .workbench_window_state
+        .lock()
+        .map_err(|_| "屏保状态异常".to_string())?
+        .take();
 
     let main = app.get_webview_window("main").ok_or("找不到主工作台窗口")?;
-    main.set_fullscreen(false)
-        .map_err(|err| format!("无法退出全屏屏保：{err}"))?;
-    main.set_always_on_top(false)
-        .map_err(|err| format!("无法恢复工作台窗口层级：{err}"))?;
-    main.set_decorations(true)
-        .map_err(|err| format!("无法恢复工作台窗口边框：{err}"))?;
-    main.set_resizable(true)
-        .map_err(|err| format!("无法恢复工作台窗口尺寸：{err}"))?;
-    let _ = main.show();
-    let _ = main.set_focus();
-    Ok(())
+    restore_workbench_window(&main, snapshot)
 }
 
 #[tauri::command]
@@ -730,6 +827,34 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .on_window_event(|window, event| {
+            if window.label() != "main" {
+                return;
+            }
+            let app = window.app_handle().clone();
+            let saver_active = app
+                .state::<AppState>()
+                .saver_active
+                .lock()
+                .map(|active| *active)
+                .unwrap_or(false);
+            if !saver_active {
+                return;
+            }
+            match event {
+                WindowEvent::CloseRequested { api, .. } => {
+                    // Closing from Task View must not bypass the saver password.
+                    api.prevent_close();
+                    reassert_saver_window(app);
+                }
+                WindowEvent::Focused(false) => {
+                    // Best effort only: Windows system UI still owns Win+D/Task View,
+                    // but the saver immediately restores its own coverage afterwards.
+                    reassert_saver_window(app);
+                }
+                _ => {}
+            }
+        })
         .setup(|app| {
             let store = load_store(&app.handle()).unwrap_or_else(|err| {
                 eprintln!("无法加载本地数据：{err}");
@@ -739,6 +864,7 @@ pub fn run() {
                 store: Mutex::new(store),
                 saver_active: Mutex::new(false),
                 saver_project_id: Mutex::new(None),
+                workbench_window_state: Mutex::new(None),
             });
             // A prior interrupted saver can leave the native main window minimized or hidden.
             // Always restore the workbench when a new process starts.

@@ -84,12 +84,12 @@ src-tauri/target/release/bundle/nsis/
 
 ## 自动更新与发布
 
-Windows 发布由 GitHub Actions 自动完成。推送形如 `v0.1.1` 的 tag 后，会构建、签名并发布 Windows NSIS 安装包以及更新清单。
+Windows 发布由 GitHub Actions 自动完成。推送形如 `v0.1.3` 的 tag 后，会构建、签名并发布 Windows NSIS 安装包以及更新清单。
 
 ```powershell
 # 更新 package.json、src-tauri/Cargo.toml、src-tauri/tauri.conf.json 中的版本号后：
-git tag v0.1.2
-git push origin v0.1.2
+git tag v0.1.3
+git push origin v0.1.3
 ```
 
 详细的签名密钥、安全边界和发布步骤请见 [RELEASE.md](RELEASE.md)。

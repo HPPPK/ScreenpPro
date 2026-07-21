@@ -627,20 +627,38 @@ fn create_saver_windows(app: &AppHandle, project_id: &str) -> Result<(), String>
         let window = WebviewWindowBuilder::new(
             app,
             &label,
-            WebviewUrl::App(format!("index.html?screenproSaverProjectId={project_id}").into()),
+            // Route selection is based on the Tauri window label in React. Keeping the
+            // Webview URL to a plain packaged document avoids a second-window blank page.
+            WebviewUrl::App("index.html".into()),
         )
         .title("ScreenPro")
+        .visible(false)
         .decorations(false)
+        .resizable(false)
+        .minimizable(false)
+        .maximizable(false)
+        .closable(false)
         .always_on_top(true)
         .skip_taskbar(true)
         .transparent(false)
-        // Set the hash before React boots instead of relying on a fragment in WebviewUrl.
-        .initialization_script("window.location.hash = '#/saver';")
         .position(position.x as f64, position.y as f64)
         .inner_size(size.width as f64, size.height as f64)
         .build()
         .map_err(|err| format!("无法创建屏保窗口：{err}"))?;
-        let _ = window.set_focus();
+        // Apply the presentation properties once more after construction. On some Windows
+        // WebView2 hosts, builder-time decoration flags are otherwise ignored for child windows.
+        window
+            .set_decorations(false)
+            .map_err(|err| format!("无法移除屏保窗口边框：{err}"))?;
+        window
+            .set_resizable(false)
+            .map_err(|err| format!("无法锁定屏保窗口尺寸：{err}"))?;
+        window
+            .set_fullscreen(true)
+            .map_err(|err| format!("无法切换到全屏屏保：{err}"))?;
+        window
+            .show()
+            .map_err(|err| format!("无法显示屏保窗口：{err}"))?;
         labels.push(label);
     }
     *state

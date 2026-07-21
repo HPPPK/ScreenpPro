@@ -740,6 +740,13 @@ pub fn run() {
                 saver_active: Mutex::new(false),
                 saver_project_id: Mutex::new(None),
             });
+            // A prior interrupted saver can leave the native main window minimized or hidden.
+            // Always restore the workbench when a new process starts.
+            if let Some(main) = app.get_webview_window("main") {
+                let _ = main.show();
+                let _ = main.unminimize();
+                let _ = main.set_focus();
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

@@ -47,10 +47,10 @@ ScreenPro 使用 Tauri Updater 和 GitHub Releases 为 Windows 提供签名验�
 
    ```powershell
    git add --all
-   git commit -m "Release v0.1.4"
+   git commit -m "Release v0.1.5"
    git push origin main
-   git tag v0.1.4
-   git push origin v0.1.4
+   git tag v0.1.5
+   git push origin v0.1.5
    ```
 
 4. 在 GitHub Actions 查看 **Release ScreenPro** 工作流；成功后，GitHub Release 会包含：

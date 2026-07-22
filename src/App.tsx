@@ -1,88 +1,19 @@
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent, type MouseEvent } from "react";
-import { convertFileSrc } from "@tauri-apps/api/core";
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { check } from "@tauri-apps/plugin-updater";
 import { open } from "@tauri-apps/plugin-dialog";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { listen } from "@tauri-apps/api/event";
 import * as globalShortcut from "@tauri-apps/plugin-global-shortcut";
 import { api } from "./api";
 import { blankComponent, CANVAS, componentLabels, type AppSettings, type BootstrapData, type ComponentType, type SaverComponent, type ScreenSaverProject } from "./types";
+import { componentRegistry } from "./componentRegistry";
+import { Asset, Visual, backgroundStyle } from "./runtimeComponents";
 import "./App.css";
 
 type View = "home" | "library" | "market" | "settings";
 type Notice = { kind: "ok" | "bad"; text: string } | null;
 const nav: { id: View; label: string; icon: string }[] = [{ id: "home", label: "工作台", icon: "◈" }, { id: "library", label: "我的库", icon: "▦" }, { id: "market", label: "资源库", icon: "✦" }, { id: "settings", label: "设置", icon: "⚙" }];
-const clockText = (format: string) => { const d = new Date(); return format.replace("HH", String(d.getHours()).padStart(2, "0")).replace("mm", String(d.getMinutes()).padStart(2, "0")).replace("ss", String(d.getSeconds()).padStart(2, "0")); };
-
-function Asset({ id, className = "", alt = "图片" }: { id?: string | null; className?: string; alt?: string }) {
-  const [src, setSrc] = useState<string | null>(null);
-  const [loadFailed, setLoadFailed] = useState(false);
-
-  useEffect(() => {
-    let live = true;
-    setLoadFailed(false);
-    if (!id) {
-      setSrc(null);
-      return;
-    }
-    api.getAssetPath(id)
-      .then((path) => {
-        if (live) setSrc(convertFileSrc(path));
-      })
-      .catch((error) => {
-        console.error("无法读取 ScreenPro 私有图片资源", { assetId: id, error });
-        if (live) setSrc(null);
-      });
-    return () => { live = false; };
-  }, [id]);
-
-  if (src && !loadFailed) {
-    return <img src={src} alt={alt} className={className} onError={() => {
-      console.error("ScreenPro 图片无法在 WebView 中渲染", { assetId: id, src });
-      setLoadFailed(true);
-    }} />;
-  }
-
-  return <div className={"image-placeholder " + className} title={id ? "图片资源无法加载" : undefined}><span>▧</span><small>{id ? "图片无法加载" : "选择图片"}</small></div>;
-}
-
-function projectBackgroundStyle(project: ScreenSaverProject): CSSProperties {
-  const bg = project.background ?? {};
-  return bg.kind === "solid"
-    ? { background: String(bg.start ?? "#0A1024") }
-    : { background: "linear-gradient(135deg, " + String(bg.start ?? "#0A1024") + ", " + String(bg.end ?? "#243B6B") + ")" };
-}
-
-function useCanvasScale() {
-  const ref = useRef<HTMLDivElement>(null);
-  const [scale, setScale] = useState(1);
-
-  useLayoutEffect(() => {
-    const element = ref.current;
-    if (!element) return;
-    const update = () => setScale(element.clientWidth / CANVAS.width || 1);
-    update();
-    const observer = new ResizeObserver(update);
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, []);
-
-  return { ref, scale };
-}
-
-function Piece({ item, scale, selected, editable, onPick }: { item: SaverComponent; scale: number; selected?: boolean; editable?: boolean; onPick?: (event: MouseEvent<HTMLDivElement>) => void }) {
-  const [, tick] = useState(0); useEffect(() => { const t = setInterval(() => tick((n) => n + 1), 1000); return () => clearInterval(t); }, []);
-  const p = item.props; const style: CSSProperties = { left: (item.x / CANVAS.width) * 100 + "%", top: (item.y / CANVAS.height) * 100 + "%", width: (item.width / CANVAS.width) * 100 + "%", height: (item.height / CANVAS.height) * 100 + "%" };
-  const cls = "piece " + (selected ? "selected " : "") + (editable ? "editable" : "");
-  if (item.componentType === "text") return <div style={style} className={cls} onMouseDown={onPick}><div className="text-piece" style={{ color: String(p.color ?? "#fff"), fontSize: Number(p.fontSize ?? 48) * scale, fontWeight: Number(p.fontWeight ?? 600), textAlign: (p.align as "left" | "center" | "right") ?? "center" }}>{String(p.content ?? "文字")}</div></div>;
-  if (item.componentType === "clock") { const fontSize = Number(p.fontSize ?? 120) * scale; return <div style={style} className={cls} onMouseDown={onPick}><div className="clock-piece" style={{ color: String(p.color ?? "#fff"), textAlign: (p.align as "left" | "center" | "right") ?? "center" }}><strong style={{ fontSize }}>{clockText(String(p.format ?? "HH:mm"))}</strong>{p.showDate !== false && <span style={{ fontSize: fontSize * 0.17 }}>{new Intl.DateTimeFormat("zh-CN", { weekday: "long", month: "long", day: "numeric" }).format(new Date())}</span>}</div></div>; }
-  return <div style={style} className={cls} onMouseDown={onPick}><Asset id={p.assetId as string | null} className="image-piece" /></div>;
-}
-
-function Visual({ project, editable, selectedId, onPick }: { project: ScreenSaverProject; editable?: boolean; selectedId?: string | null; onPick?: (event: MouseEvent<HTMLDivElement>, item: SaverComponent) => void }) {
-  const { ref, scale } = useCanvasScale();
-  const bg = project.background ?? {};
-  return <div ref={ref} className="visual" style={projectBackgroundStyle(project)}>{bg.imageAssetId && <Asset id={bg.imageAssetId} className="background-image" alt="背景" />}{project.elements.map((item) => <Piece key={item.id} item={item} scale={scale} editable={editable} selected={item.id === selectedId} onPick={onPick ? (event) => onPick(event, item) : undefined} />)}</div>;
-}
 
 function SecuritySetup({ done }: { done: () => void }) {
   const [password, setPassword] = useState(""); const [again, setAgain] = useState(""); const [question, setQuestion] = useState("你最喜欢的城市是哪里？"); const [answer, setAnswer] = useState(""); const [error, setError] = useState("");
@@ -91,17 +22,66 @@ function SecuritySetup({ done }: { done: () => void }) {
 }
 
 function Editor({ source, close, save }: { source: ScreenSaverProject; close: () => void; save: (project: ScreenSaverProject) => Promise<void> }) {
-  const [project, setProject] = useState<ScreenSaverProject>(() => structuredClone(source)); const [selected, setSelected] = useState<string | null>(source.elements[0]?.id ?? null); const [busy, setBusy] = useState(false); const [drag, setDrag] = useState<{ id: string; dx: number; dy: number } | null>(null); const canvas = useRef<HTMLDivElement>(null);
+  const [project, setProject] = useState<ScreenSaverProject>(() => structuredClone(source));
+  const [selected, setSelected] = useState<string | null>(source.elements[0]?.id ?? null);
+  const [busy, setBusy] = useState(false);
+  const [drag, setDrag] = useState<{ id: string; dx: number; dy: number } | null>(null);
+  const canvas = useRef<HTMLDivElement>(null);
+  const dragFrame = useRef<number | null>(null);
+  const pointer = useRef<{ clientX: number; clientY: number } | null>(null);
   const selectedItem = project.elements.find((item) => item.id === selected) ?? null;
   const patch = (next: Partial<SaverComponent>) => selectedItem && setProject((old) => ({ ...old, elements: old.elements.map((item) => item.id === selectedItem.id ? { ...item, ...next } : item) }));
   const props = (next: Record<string, unknown>) => selectedItem && patch({ props: { ...selectedItem.props, ...next } });
   const add = (type: ComponentType) => { const item = blankComponent(type); setProject((old) => ({ ...old, elements: [...old.elements, item] })); setSelected(item.id); };
-  const pick = (event: MouseEvent<HTMLDivElement>, item: SaverComponent) => { event.stopPropagation(); const r = canvas.current!.getBoundingClientRect(); setSelected(item.id); setDrag({ id: item.id, dx: (event.clientX - r.left) * CANVAS.width / r.width - item.x, dy: (event.clientY - r.top) * CANVAS.height / r.height - item.y }); };
-  const move = (event: MouseEvent<HTMLDivElement>) => { if (!drag || !canvas.current) return; const r = canvas.current.getBoundingClientRect(); setProject((old) => ({ ...old, elements: old.elements.map((item) => item.id !== drag.id ? item : { ...item, x: Math.max(0, Math.min(CANVAS.width - item.width, (event.clientX - r.left) * CANVAS.width / r.width - drag.dx)), y: Math.max(0, Math.min(CANVAS.height - item.height, (event.clientY - r.top) * CANVAS.height / r.height - drag.dy)) }) })); };
-  const image = async () => { if (!selectedItem || selectedItem.componentType !== "image") return; const path = await open({ filters: [{ name: "图片", extensions: ["png", "jpg", "jpeg", "webp", "gif"] }] }); if (typeof path === "string") props({ assetId: await api.importAsset(path) }); };
+  const pick = (event: MouseEvent<HTMLDivElement>, item: SaverComponent) => { event.stopPropagation(); const r = canvas.current?.getBoundingClientRect(); if (!r) return; setSelected(item.id); setDrag({ id: item.id, dx: (event.clientX - r.left) * CANVAS.width / r.width - item.x, dy: (event.clientY - r.top) * CANVAS.height / r.height - item.y }); };
+  const stopDrag = () => { if (dragFrame.current !== null) { cancelAnimationFrame(dragFrame.current); dragFrame.current = null; } pointer.current = null; setDrag(null); };
+  const move = (event: MouseEvent<HTMLDivElement>) => {
+    if (!drag || !canvas.current) return;
+    pointer.current = { clientX: event.clientX, clientY: event.clientY };
+    if (dragFrame.current !== null) return;
+    dragFrame.current = requestAnimationFrame(() => {
+      dragFrame.current = null;
+      const point = pointer.current;
+      if (!point || !canvas.current) return;
+      const r = canvas.current.getBoundingClientRect();
+      setProject((old) => ({ ...old, elements: old.elements.map((item) => item.id !== drag.id ? item : { ...item, x: Math.max(0, Math.min(CANVAS.width - item.width, (point.clientX - r.left) * CANVAS.width / r.width - drag.dx)), y: Math.max(0, Math.min(CANVAS.height - item.height, (point.clientY - r.top) * CANVAS.height / r.height - drag.dy)) }) }));
+    });
+  };
+  const importImage = async (asBackground = false) => { const path = await open({ multiple: false, filters: [{ name: "图片", extensions: ["png", "jpg", "jpeg", "webp", "gif", "bmp", "svg"] }] }); if (typeof path !== "string") return; const id = await api.importAsset(path); if (asBackground) setProject((old) => ({ ...old, background: { ...old.background, imageAssetId: id } })); else props({ assetId: id }); };
+  const addPhoto = async () => { const paths = await open({ multiple: true, filters: [{ name: "图片", extensions: ["png", "jpg", "jpeg", "webp", "gif", "bmp", "svg"] }] }); const selectedPaths = Array.isArray(paths) ? paths : typeof paths === "string" ? [paths] : []; if (!selectedPaths.length || !selectedItem || selectedItem.componentType !== "photoWall") return; const ids = []; for (const path of selectedPaths) ids.push(await api.importAsset(path)); props({ assetIds: [...(Array.isArray(selectedItem.props.assetIds) ? selectedItem.props.assetIds : []), ...ids] }); };
   const bg = project.background ?? {};
-  return <main className="editor"><header className="editor-head"><button className="text-button" onClick={close}>← 返回我的库</button><div><input className="title-input" value={project.name} onChange={(e) => setProject({ ...project, name: e.target.value })} /><small>1920 × 1080 逻辑画布，会自动适配每个显示器</small></div><button className="primary-button" disabled={busy} onClick={async () => { setBusy(true); await save(project); setBusy(false); }}>{busy ? "保存中…" : "保存作品"}</button></header><div className="editor-body"><aside className="editor-left"><p className="eyebrow">添加组件</p><h2>构建你的画面</h2>{(["text", "image", "clock"] as ComponentType[]).map((type) => <button className="add-component" key={type} onClick={() => add(type)}><b>{type === "text" ? "T" : type === "image" ? "▧" : "◷"}</b><span><strong>{componentLabels[type]}</strong><small>{type === "text" ? "文字内容" : type === "image" ? "本地图片" : "当前时间"}</small></span><em>＋</em></button>)}<div className="layers"><p className="eyebrow">图层</p>{project.elements.map((item, index) => <button key={item.id} className={selected === item.id ? "layer active" : "layer"} onClick={() => setSelected(item.id)}>{item.componentType === "text" ? "T" : item.componentType === "image" ? "▧" : "◷"} {componentLabels[item.componentType]} {index + 1}</button>)}</div></aside><section className="canvas-zone"><div className="canvas-label">预览画布 <span>● 拖动组件以重新布局</span></div><div ref={canvas} className="editor-canvas" onMouseMove={move} onMouseUp={() => setDrag(null)} onMouseLeave={() => setDrag(null)} onMouseDown={() => setSelected(null)}><Visual project={project} editable selectedId={selected} onPick={pick} /></div></section><aside className="editor-right"><p className="eyebrow">{selectedItem ? "组件属性" : "画布属性"}</p>{selectedItem ? <><h2>{componentLabels[selectedItem.componentType]}</h2><div className="pair"><label>X<input type="number" value={Math.round(selectedItem.x)} onChange={(e) => patch({ x: Number(e.target.value) })} /></label><label>Y<input type="number" value={Math.round(selectedItem.y)} onChange={(e) => patch({ y: Number(e.target.value) })} /></label></div><div className="pair"><label>宽度<input min="10" type="number" value={Math.round(selectedItem.width)} onChange={(e) => patch({ width: Number(e.target.value) })} /></label><label>高度<input min="10" type="number" value={Math.round(selectedItem.height)} onChange={(e) => patch({ height: Number(e.target.value) })} /></label></div>{selectedItem.componentType === "text" && <><label>文字内容<textarea value={String(selectedItem.props.content ?? "")} onChange={(e) => props({ content: e.target.value })} /></label><label>字体大小<input min="16" max="180" type="range" value={Number(selectedItem.props.fontSize ?? 58)} onChange={(e) => props({ fontSize: Number(e.target.value) })} /></label><label>颜色<input type="color" value={String(selectedItem.props.color ?? "#ffffff")} onChange={(e) => props({ color: e.target.value })} /></label><label>对齐<select value={String(selectedItem.props.align ?? "center")} onChange={(e) => props({ align: e.target.value })}><option value="left">左对齐</option><option value="center">居中</option><option value="right">右对齐</option></select></label></>}{selectedItem.componentType === "image" && <><Asset id={selectedItem.props.assetId as string | null} className="property-image" /><button className="ghost-button" onClick={image}>导入本地图片</button><label>圆角<input type="range" min="0" max="100" value={Number(selectedItem.props.radius ?? 28)} onChange={(e) => props({ radius: Number(e.target.value) })} /></label></>}{selectedItem.componentType === "clock" && <><label>时间格式<select value={String(selectedItem.props.format ?? "HH:mm")} onChange={(e) => props({ format: e.target.value })}><option value="HH:mm">24 小时</option><option value="HH:mm:ss">含秒钟</option></select></label><label>文字大小<input min="32" max="220" type="range" value={Number(selectedItem.props.fontSize ?? 120)} onChange={(e) => props({ fontSize: Number(e.target.value) })} /></label><label>颜色<input type="color" value={String(selectedItem.props.color ?? "#ffffff")} onChange={(e) => props({ color: e.target.value })} /></label><label className="check"><input type="checkbox" checked={selectedItem.props.showDate !== false} onChange={(e) => props({ showDate: e.target.checked })} /> 显示日期</label></>}<button className="danger-button" onClick={() => { setProject((old) => ({ ...old, elements: old.elements.filter((item) => item.id !== selectedItem.id) })); setSelected(null); }}>删除组件</button></> : <><h2>画布背景</h2><label>背景类型<select value={bg.kind ?? "gradient"} onChange={(e) => setProject({ ...project, background: { ...bg, kind: e.target.value as "solid" | "gradient" } })}><option value="gradient">渐变</option><option value="solid">纯色</option></select></label><label>起始颜色<input type="color" value={String(bg.start ?? "#0a1024")} onChange={(e) => setProject({ ...project, background: { ...bg, start: e.target.value } })} /></label>{bg.kind !== "solid" && <label>结束颜色<input type="color" value={String(bg.end ?? "#243b6b")} onChange={(e) => setProject({ ...project, background: { ...bg, end: e.target.value } })} /></label>}<p className="muted">选择一个组件后，可以编辑内容、尺寸和位置。</p></>}</aside></div></main>;
+  const setBg = (next: Partial<ScreenSaverProject["background"]>) => setProject((old) => ({ ...old, background: { ...(old.background ?? {}), ...next } }));
+  const colorInput = (label: string, key: string, fallback: string) => <label>{label}<input type="color" value={String(selectedItem?.props[key] ?? fallback)} onChange={(event) => props({ [key]: event.target.value })} /></label>;
+  const textInput = (label: string, key: string, fallback = "") => <label>{label}<input value={String(selectedItem?.props[key] ?? fallback)} onChange={(event) => props({ [key]: event.target.value })} /></label>;
+  const numberInput = (label: string, key: string, fallback: number, min?: number, max?: number) => <label>{label}<input type="number" min={min} max={max} value={Number(selectedItem?.props[key] ?? fallback)} onChange={(event) => props({ [key]: Number(event.target.value) })} /></label>;
+  const rangeInput = (label: string, key: string, fallback: number, min: number, max: number) => <label>{label}<input type="range" min={min} max={max} value={Number(selectedItem?.props[key] ?? fallback)} onChange={(event) => props({ [key]: Number(event.target.value) })} /></label>;
+  const common = selectedItem ? <><div className="pair"><label>X<input type="number" value={Math.round(selectedItem.x)} onChange={(e) => patch({ x: Number(e.target.value) })} /></label><label>Y<input type="number" value={Math.round(selectedItem.y)} onChange={(e) => patch({ y: Number(e.target.value) })} /></label></div><div className="pair"><label>宽度<input min="10" type="number" value={Math.round(selectedItem.width)} onChange={(e) => patch({ width: Number(e.target.value) })} /></label><label>高度<input min="10" type="number" value={Math.round(selectedItem.height)} onChange={(e) => patch({ height: Number(e.target.value) })} /></label></div></> : null;
+  const specific = selectedItem ? <>
+    {selectedItem.componentType === "text" && <><label>文字内容<textarea value={String(selectedItem.props.content ?? "")} onChange={(e) => props({ content: e.target.value })} /></label>{rangeInput("字体大小", "fontSize", 58, 16, 180)}{colorInput("颜色", "color", "#ffffff")}<label>对齐<select value={String(selectedItem.props.align ?? "center")} onChange={(e) => props({ align: e.target.value })}><option value="left">左对齐</option><option value="center">居中</option><option value="right">右对齐</option></select></label></>}
+    {selectedItem.componentType === "image" && <><Asset id={selectedItem.props.assetId as string | null} className="property-image" /><button className="ghost-button" onClick={() => importImage()}>导入本地图片</button>{rangeInput("圆角", "radius", 28, 0, 100)}<label>适配方式<select value={String(selectedItem.props.fit ?? "cover")} onChange={(e) => props({ fit: e.target.value })}><option value="cover">裁切填充</option><option value="contain">完整显示</option></select></label></>}
+    {selectedItem.componentType === "clock" && <>{textInput("时间格式", "format", "HH:mm")}{rangeInput("文字大小", "fontSize", 130, 32, 220)}{colorInput("颜色", "color", "#ffffff")}<label>对齐<select value={String(selectedItem.props.align ?? "center")} onChange={(e) => props({ align: e.target.value })}><option value="left">左对齐</option><option value="center">居中</option><option value="right">右对齐</option></select></label><label className="check"><input type="checkbox" checked={selectedItem.props.showDate !== false} onChange={(e) => props({ showDate: e.target.checked })} /> 显示日期</label></>}
+    {selectedItem.componentType === "date" && <>{textInput("日期格式", "format", "YYYY年MM月DD日")}{rangeInput("文字大小", "fontSize", 46, 16, 160)}{colorInput("颜色", "color", "#ffffff")}<label className="check"><input type="checkbox" checked={selectedItem.props.showWeekday !== false} onChange={(e) => props({ showWeekday: e.target.checked })} /> 显示星期</label></>}
+    {selectedItem.componentType === "countdown" && <><label>目标时间<input type="datetime-local" value={String(selectedItem.props.target ?? "").slice(0, 16)} onChange={(e) => props({ target: new Date(e.target.value).toISOString() })} /></label>{textInput("说明文字", "label", "距离目标还有")}{textInput("结束文字", "finishedText", "目标时间已到")}{rangeInput("文字大小", "fontSize", 78, 24, 160)}{colorInput("颜色", "color", "#ffffff")}</>}
+    {selectedItem.componentType === "progress" && <>{textInput("标签", "label", "当前进度")}{rangeInput("进度百分比", "value", 65, 0, 100)}{colorInput("进度颜色", "color", "#9de8bc")}<label className="check"><input type="checkbox" checked={selectedItem.props.showPercent !== false} onChange={(e) => props({ showPercent: e.target.checked })} /> 显示百分比</label></>}
+    {selectedItem.componentType === "worldClock" && <><label>城市列表<textarea value={String(selectedItem.props.cities ?? "上海,伦敦,纽约")} onChange={(e) => props({ cities: e.target.value })} /></label>{rangeInput("文字大小", "fontSize", 42, 16, 100)}{colorInput("颜色", "color", "#ffffff")}</>}
+    {selectedItem.componentType === "qr" && <>{textInput("二维码内容", "value", "https://github.com/HPPPK/ScreenpPro")}{textInput("说明文字", "label", "扫描访问")}{numberInput("二维码尺寸", "size", 360, 80, 800)}</>}
+    {selectedItem.componentType === "webPreview" && <><label>网页地址<input type="url" value={String(selectedItem.props.url ?? "")} onChange={(e) => props({ url: e.target.value })} placeholder="https://example.com" /></label>{numberInput("刷新间隔（秒）", "refreshSeconds", 300, 30, 86400)}<label className="check"><input type="checkbox" checked={selectedItem.props.allowScripts !== false} onChange={(e) => props({ allowScripts: e.target.checked })} /> 允许网页脚本</label><label>透明度<input type="range" min="0.2" max="1" step="0.1" value={Number(selectedItem.props.opacity ?? 1)} onChange={(e) => props({ opacity: Number(e.target.value) })} /></label><p className="muted">网页只读、禁止交互，并限制为 http/https。</p></>}
+    {selectedItem.componentType === "github" && <>{textInput("公开仓库", "repo", "HPPPK/ScreenpPro")}{numberInput("刷新间隔（秒）", "refreshSeconds", 600, 60, 86400)}{colorInput("文字颜色", "color", "#ffffff")}</>}
+    {selectedItem.componentType === "rss" && <><label>RSS 地址<input type="url" value={String(selectedItem.props.url ?? "")} onChange={(e) => props({ url: e.target.value })} placeholder="https://example.com/feed.xml" /></label>{numberInput("刷新间隔（秒）", "refreshSeconds", 600, 60, 86400)}{numberInput("显示条数", "maxItems", 5, 1, 12)}{colorInput("文字颜色", "color", "#ffffff")}</>}
+    {selectedItem.componentType === "quote" && <><label>句子（每行一句）<textarea value={String(selectedItem.props.quotes ?? "")} onChange={(e) => props({ quotes: e.target.value })} /></label>{numberInput("轮播间隔（秒）", "intervalSeconds", 20, 5, 86400)}{rangeInput("文字大小", "fontSize", 64, 18, 150)}{colorInput("颜色", "color", "#ffffff")}</>}
+    {selectedItem.componentType === "photoWall" && <><button className="ghost-button" onClick={addPhoto}>添加照片</button><p className="muted">已添加 {Array.isArray(selectedItem.props.assetIds) ? selectedItem.props.assetIds.length : 0} 张照片</p>{numberInput("轮播间隔（秒）", "intervalSeconds", 12, 5, 86400)}</>}
+    {selectedItem.componentType === "weather" && <>{textInput("城市", "city", "Shanghai")}{numberInput("刷新间隔（秒）", "refreshSeconds", 900, 60, 86400)}{rangeInput("文字大小", "fontSize", 54, 18, 130)}{colorInput("颜色", "color", "#ffffff")}</>}
+    {selectedItem.componentType === "battery" && <>{rangeInput("文字大小", "fontSize", 54, 18, 130)}{colorInput("颜色", "color", "#ffffff")}<label className="check"><input type="checkbox" checked={selectedItem.props.showCharging !== false} onChange={(e) => props({ showCharging: e.target.checked })} /> 显示充电状态</label></>}
+    {selectedItem.componentType === "systemStats" && <>{numberInput("刷新间隔（秒）", "refreshSeconds", 3, 1, 60)}{rangeInput("文字大小", "fontSize", 32, 16, 80)}{colorInput("颜色", "color", "#ffffff")}</>}
+    {selectedItem.componentType === "network" && <>{rangeInput("文字大小", "fontSize", 48, 18, 130)}{colorInput("颜色", "color", "#ffffff")}</>}
+    {selectedItem.componentType === "calendar" && <>{numberInput("月份偏移", "monthOffset", 0, -12, 12)}{colorInput("文字颜色", "color", "#ffffff")}{colorInput("高亮颜色", "accentColor", "#9de8bc")}<label className="check"><input type="checkbox" checked={selectedItem.props.showToday !== false} onChange={(e) => props({ showToday: e.target.checked })} /> 显示今天</label></>}
+    {selectedItem.componentType === "pomodoro" && <>{numberInput("专注分钟", "focusMinutes", 25, 1, 240)}{numberInput("休息分钟", "breakMinutes", 5, 1, 120)}{textInput("阶段标签", "label", "专注")}{rangeInput("文字大小", "fontSize", 94, 24, 180)}{colorInput("文字颜色", "color", "#ffffff")}{colorInput("高亮颜色", "accentColor", "#9de8bc")}<button className="ghost-button" onClick={() => props({ startAt: Date.now() })}>重置计时</button></>}
+    {selectedItem.componentType === "dayProgress" && <>{textInput("标签", "label", "今天")}{colorInput("进度颜色", "color", "#9de8bc")}{colorInput("轨道颜色", "trackColor", "#ffffff33")}<label className="check"><input type="checkbox" checked={selectedItem.props.showTime !== false} onChange={(e) => props({ showTime: e.target.checked })} /> 显示当前时间</label></>}
+    {selectedItem.componentType === "markdown" && <><label>内容<textarea rows={8} value={String(selectedItem.props.content ?? "")} onChange={(e) => props({ content: e.target.value })} /></label>{rangeInput("文字大小", "fontSize", 34, 16, 96)}{rangeInput("行高", "lineHeight", 1.5, 1, 2.4)}{colorInput("文字颜色", "color", "#ffffff")}<label>对齐<select value={String(selectedItem.props.align ?? "left")} onChange={(e) => props({ align: e.target.value })}><option value="left">左对齐</option><option value="center">居中</option><option value="right">右对齐</option></select></label><p className="muted">支持标题（#）、引用（&gt;）和列表（-）。</p></>}
+  </> : null;
+  return <main className="editor"><header className="editor-head"><button className="text-button" onClick={close}>← 返回我的库</button><div><input className="title-input" value={project.name} onChange={(e) => setProject({ ...project, name: e.target.value })} /><small>1920 × 1080 逻辑画布，会自动适配每个显示器；编辑器和运行页共用同一套渲染器</small></div><button className="primary-button" disabled={busy} onClick={async () => { setBusy(true); try { await save(project); } finally { setBusy(false); } }}>{busy ? "保存中…" : "保存作品"}</button></header><div className="editor-body"><aside className="editor-left"><p className="eyebrow">添加组件</p><h2>构建你的画面</h2>{componentRegistry.map((definition) => <button className="add-component" key={definition.type} onClick={() => add(definition.type)}><b>{definition.icon}</b><span><strong>{definition.label}</strong><small>{definition.description}</small></span><em>＋</em></button>)}<div className="layers"><p className="eyebrow">图层（按添加顺序渲染）</p>{project.elements.map((item, index) => <button key={item.id} className={selected === item.id ? "layer active" : "layer"} onClick={() => setSelected(item.id)}>{componentRegistry.find((definition) => definition.type === item.componentType)?.icon} {componentLabels[item.componentType]} {index + 1}</button>)}</div></aside><section className="canvas-zone"><div className="canvas-label">预览画布 <span>● 拖动组件以重新布局 · 实际运行使用相同渲染器</span></div><div ref={canvas} className="editor-canvas" onMouseMove={move} onMouseUp={stopDrag} onMouseLeave={stopDrag} onMouseDown={() => setSelected(null)}><Visual project={project} editable selectedId={selected} onPick={pick} /></div></section><aside className="editor-right"><p className="eyebrow">{selectedItem ? "组件属性" : "画布属性"}</p>{selectedItem ? <><h2>{componentLabels[selectedItem.componentType]}</h2>{common}{specific}<button className="danger-button" onClick={() => { setProject((old) => ({ ...old, elements: old.elements.filter((item) => item.id !== selectedItem.id) })); setSelected(null); }}>删除组件</button></> : <><h2>画布背景</h2><label>背景类型<select value={bg.kind ?? "gradient"} onChange={(e) => setBg({ kind: e.target.value as "solid" | "gradient" | "aurora" | "stars" | "waves" })}><option value="gradient">渐变</option><option value="solid">纯色</option><option value="aurora">极光</option><option value="stars">星空</option><option value="waves">波浪</option></select></label><label>起始颜色<input type="color" value={String(bg.start ?? "#0a1024")} onChange={(e) => setBg({ start: e.target.value })} /></label>{["gradient", "solid"].includes(bg.kind ?? "gradient") && bg.kind !== "solid" && <label>结束颜色<input type="color" value={String(bg.end ?? "#243b6b")} onChange={(e) => setBg({ end: e.target.value })} /></label>}{["aurora", "stars", "waves"].includes(bg.kind ?? "") && <label>动画速度<input type="range" min="0.5" max="3" step="0.1" value={Number(bg.speed ?? 1)} onChange={(e) => setBg({ speed: Number(e.target.value) })} /></label>}<Asset id={bg.imageAssetId} className="property-image" alt="背景图片" /><button className="ghost-button" onClick={() => importImage(true)}>导入背景图片</button>{bg.imageAssetId && <button className="text-button" onClick={() => setBg({ imageAssetId: null })}>移除背景图片</button>}<p className="muted">选择组件后，可以编辑内容、尺寸和位置。所有预览和屏保运行页使用相同的逻辑画布比例。</p></>}</aside></div></main>;
 }
+
 
 function Saver() {
   const [data, setData] = useState<BootstrapData | null>(null);
@@ -152,7 +132,6 @@ function Saver() {
     try {
       if (await api.verifyUnlock(password)) {
         await api.endSaver();
-        window.location.hash = "";
       } else {
         setError("密码不正确，请重试");
         setPassword("");
@@ -164,7 +143,7 @@ function Saver() {
     }
   };
 
-  return <main className="saver-shell" style={projectBackgroundStyle(project)}>
+  return <main className="saver-shell" style={backgroundStyle(project)}>
     <div className="saver-stage"><Visual project={project} /></div>
     {!showUnlock && <div className="saver-hint">按任意键以显示解锁界面</div>}
     {showUnlock && <div className="unlock-shade"><form className="unlock-card" onPointerDown={(event) => event.stopPropagation()} onSubmit={unlock}>
@@ -296,26 +275,62 @@ function SettingsPanel({ data, settings, setSettings, save, reset, onCaptureChan
  return <><header className="page-header"><div><p className="eyebrow">设置</p><h1>决定你的保护方式。</h1><p>快捷键在应用后台运行时仍可使用。请避开系统及其他软件占用的组合键。</p></div></header><div className="settings"><section><p className="eyebrow">启动快捷键</p><h2>当前屏保</h2><label>全局快捷键<ShortcutRecorder label="录制启动当前屏保的快捷键" value={settings.launchShortcut} onChange={updateLaunch} onCaptureChange={onCaptureChange} /></label><small>点击后直接按组合键；例如按住 Ctrl + Alt + Shift，再按 S。</small>{shortcutError && <p className="shortcut-error" role="alert">{shortcutError}</p>}<button className="primary-button" onClick={save}>保存并注册快捷键</button></section><section><p className="eyebrow">快捷键库</p><h2>一键启动特定作品</h2><p>可设置最多 9 个组合键，直接启动“我的库”中的指定屏保。</p>{pairs.map(([key, id], index) => <div className="shortcut" key={key}><ShortcutRecorder label={`录制第 ${index + 1} 个作品快捷键`} value={key} onChange={(value) => updatePair(index, true, value)} onCaptureChange={onCaptureChange} /><select value={id} aria-label={`选择第 ${index + 1} 个快捷键对应的屏保`} onChange={(e) => updatePair(index, false, e.target.value)}>{data.projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}</select><button type="button" className="danger" aria-label="删除作品快捷键" onClick={() => setSettings({ ...settings, libraryShortcuts: Object.fromEntries(pairs.filter((_, n) => n !== index)) })}>×</button></div>)}{shortcutError && <p className="shortcut-error" role="alert">{shortcutError}</p>}<button className="ghost-button" disabled={pairs.length >= 9 || !data.projects.length} onClick={addLibraryShortcut}>＋ 添加作品快捷键</button></section><section><p className="eyebrow">退出验证</p><h2>应用独立密码</h2><p>安全问题：{data.securityQuestion}</p><button className="ghost-button" onClick={() => setOpenReset(!openReset)}>重设密码</button>{openReset && <div className="reset"><label>原安全问题答案<input type="password" value={answer} onChange={(e) => setAnswer(e.target.value)} /></label><label>新密码<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} /></label><label>新安全问题<input value={question} onChange={(e) => setQuestion(e.target.value)} /></label><label>新答案<input type="password" value={newAnswer} onChange={(e) => setNewAnswer(e.target.value)} /></label><button className="primary-button" onClick={() => reset(answer, password, question, newAnswer)}>确认重设</button></div>}</section><UpdatePanel /></div></>;
 }
 
-function App() {
-  const [data, setData] = useState<BootstrapData | null>(null); const [hash, setHash] = useState(() => window.location.hash); const [view, setView] = useState<View>("home"); const [editor, setEditor] = useState<ScreenSaverProject | null>(null); const [showNew, setShowNew] = useState(false); const [name, setName] = useState("我的新屏保"); const [notice, setNotice] = useState<Notice>(null); const [settings, setSettings] = useState<AppSettings | null>(null);
+function Workbench() {
+  const [data, setData] = useState<BootstrapData | null>(null); const [view, setView] = useState<View>("home"); const [editor, setEditor] = useState<ScreenSaverProject | null>(null); const [showNew, setShowNew] = useState(false); const [name, setName] = useState("我的新屏保"); const [notice, setNotice] = useState<Notice>(null); const [settings, setSettings] = useState<AppSettings | null>(null);
   const refresh = async () => { const next = await api.bootstrap(); setData(next); setSettings(next.settings); };
-  useEffect(() => { refresh().catch((e) => setNotice({ kind: "bad", text: String(e) })); }, []); useEffect(() => { const syncHash = () => setHash(window.location.hash); window.addEventListener("hashchange", syncHash); return () => window.removeEventListener("hashchange", syncHash); }, []); useEffect(() => { if (!notice) return; const t = setTimeout(() => setNotice(null), 3500); return () => clearTimeout(t); }, [notice]);
+  useEffect(() => { refresh().catch((e) => setNotice({ kind: "bad", text: String(e) })); }, []);
+  useEffect(() => {
+    let disposed = false;
+    let stopStarted: (() => void) | undefined;
+    let stopError: (() => void) | undefined;
+    listen("saver-started", () => setNotice(null)).then((stop) => { if (disposed) stop(); else stopStarted = stop; }).catch(() => undefined);
+    listen<string>("saver-start-error", ({ payload }) => setNotice({ kind: "bad", text: "屏保启动失败：" + payload })).then((stop) => { if (disposed) stop(); else stopError = stop; }).catch(() => undefined);
+    return () => { disposed = true; stopStarted?.(); stopError?.(); };
+  }, []);
+  useEffect(() => { if (!notice) return; const t = setTimeout(() => setNotice(null), 3500); return () => clearTimeout(t); }, [notice]);
   const error = (e: unknown) => setNotice({ kind: "bad", text: String(e).replace(/^Error:\s*/, "") });
   const register = async (next: AppSettings) => {
     await globalShortcut.unregisterAll();
     try {
       const pairs = [{ key: next.launchShortcut, id: undefined }, ...Object.entries(next.libraryShortcuts).map(([key, id]) => ({ key, id }))];
-      for (const pair of pairs) await globalShortcut.register(pair.key, () => api.startSaver(pair.id).then(() => { window.location.hash = "#/saver"; }).catch(() => undefined));
+      for (const pair of pairs) await globalShortcut.register(pair.key, () => api.startSaver(pair.id).catch((reason) => { console.error("快捷键启动屏保失败", reason); setNotice({ kind: "bad", text: "快捷键启动失败：" + String(reason).replace(/^Error:\s*/, "") }); }));
     } catch (reason) {
       await globalShortcut.unregisterAll().catch(() => undefined);
       throw reason;
     }
   };
   useEffect(() => { if (data?.hasSecurity) register(data.settings).catch(() => undefined); return () => { globalShortcut.unregisterAll().catch(() => undefined); }; }, [data?.hasSecurity]);
-  const isSaverWindow = hash.startsWith("#/saver"); if (isSaverWindow) return <Saver />; if (!data) return <main className="loading"><div className="brand-mark">S</div>正在打开 ScreenPro…</main>; if (!data.hasSecurity) return <SecuritySetup done={refresh} />; if (editor) return <Editor source={editor} close={() => setEditor(null)} save={async (project) => { try { await api.saveProject(project); await refresh(); setEditor(null); setNotice({ kind: "ok", text: "作品已保存到我的库" }); } catch (e) { error(e); } }} />;
-  const active = data.projects.find((p) => p.id === data.activeProjectId); const launch = async (id?: string) => { try { await api.startSaver(id); window.location.hash = "#/saver"; } catch (e) { error(e); } }; const make = async () => { try { const p = await api.createBlank(name); await refresh(); setShowNew(false); setEditor(p); } catch (e) { error(e); } }; const getTemplate = async (template: ScreenSaverProject) => { try { const p = await api.cloneTemplate(template.id); await refresh(); setEditor(p); setNotice({ kind: "ok", text: "已下载到我的库，可以开始编辑" }); } catch (e) { error(e); } };
-  return <div className="app"><aside className="sidebar"><div className="app-brand"><div className="brand-mark">S</div><div><strong>ScreenPro</strong><small>Screen saver studio</small></div></div><nav>{nav.map((item) => <button key={item.id} className={view === item.id ? "nav active" : "nav"} onClick={() => setView(item.id)}><span>{item.icon}</span>{item.label}</button>)}</nav><div className="side-foot"><div>◉ <span><b>本地保护已启用</b><small>不终止后台程序</small></span></div><small>v0.1.5 · Windows MVP</small></div></aside><main className="content">{view === "home" && <><header className="page-header"><div><p className="eyebrow">工作台</p><h1>让屏幕在离开时，仍然有温度。</h1><p>选择一份作品，按下快捷键。覆盖式屏保会让当前工作台全屏显示，同时让后台工作继续运行；需要真正锁定时，请使用 Windows 系统锁定。</p></div><div className="launch-actions"><button className="secure-button" onClick={async () => { try { await api.lockSystem(); } catch (e) { error(e); } }}>🔒 安全锁定 Windows</button><button className="primary-button" disabled={!active} onClick={() => launch()}>▶ 启动覆盖式屏保</button></div></header><section className="home-grid"><article className="active-card"><div className="card-heading"><div><p className="eyebrow">当前屏幕保护</p><h2>{active?.name ?? "还没有作品"}</h2></div>{active && <button className="ghost-button" onClick={() => setEditor(active)}>编辑作品</button>}</div>{active ? <Visual project={active} /> : <div className="empty-visual">前往资源库下载模板，或创建空白项目。</div>}<footer><kbd>{data.settings.launchShortcut.replace("CommandOrControl", "Ctrl / ⌘")}</kbd><span>启动覆盖式屏保</span></footer></article><article className="info-card"><span>⌁</span><p className="eyebrow">保护方式</p><h2>展示保护，不替代系统锁屏</h2><p>当前稳定版复用工作台进入全屏覆盖，不会结束下载、渲染、同步或其他后台进程。多显示器独立窗口覆盖将在稳定后恢复。</p><hr /><small>它不能可靠拦截 Alt + Tab、任务管理器或其他 Windows 系统入口。需要安全锁定请使用上方“安全锁定 Windows”。</small></article></section><section className="section"><div className="section-title"><div><p className="eyebrow">最近作品</p><h2>我的屏保库</h2></div><button className="text-button" onClick={() => setView("library")}>查看全部 →</button></div>{data.projects.length ? <div className="cards">{data.projects.slice(0, 3).map((p) => <Card key={p.id} project={p} active={p.id === data.activeProjectId} edit={() => setEditor(p)} start={() => launch(p.id)} activate={async () => { await api.setActive(p.id); await refresh(); }} remove={() => {}} />)}</div> : <div className="empty">你的私人屏保库还是空的。<button className="primary-button" onClick={() => setView("market")}>探索资源库</button></div>}</section></>}
+if (!data) return <main className="loading"><div className="brand-mark">S</div>正在打开 ScreenPro…</main>; if (!data.hasSecurity) return <SecuritySetup done={refresh} />; if (editor) return <Editor source={editor} close={() => setEditor(null)} save={async (project) => {
+    const before = data;
+    setData((current) => current ? { ...current, projects: current.projects.map((item) => item.id === project.id ? project : item) } : current);
+    setEditor(null);
+    setNotice({ kind: "ok", text: "正在保存作品…" });
+    try {
+      const saved = await api.saveProject(project);
+      setData((current) => current ? { ...current, projects: current.projects.map((item) => item.id === saved.id ? saved : item) } : current);
+      setNotice({ kind: "ok", text: "作品已保存到我的库" });
+    } catch (e) {
+      if (before) setData(before);
+      setEditor(project);
+      error(e);
+    }
+  }} />;
+  const active = data.projects.find((p) => p.id === data.activeProjectId); const launch = async (id?: string) => { setNotice({ kind: "ok", text: "正在启动屏保…" }); try { await api.startSaver(id); } catch (e) { error(e); } }; const make = async () => { try { const p = await api.createBlank(name); await refresh(); setShowNew(false); setEditor(p); } catch (e) { error(e); } }; const getTemplate = async (template: ScreenSaverProject) => { try { const p = await api.cloneTemplate(template.id); await refresh(); setEditor(p); setNotice({ kind: "ok", text: "已下载到我的库，可以开始编辑" }); } catch (e) { error(e); } };
+  return <div className="app"><aside className="sidebar"><div className="app-brand"><div className="brand-mark">S</div><div><strong>ScreenPro</strong><small>Screen saver studio</small></div></div><nav>{nav.map((item) => <button key={item.id} className={view === item.id ? "nav active" : "nav"} onClick={() => setView(item.id)}><span>{item.icon}</span>{item.label}</button>)}</nav><div className="side-foot"><div>◉ <span><b>本地保护已启用</b><small>不终止后台程序</small></span></div><small>v0.1.6 · Windows MVP</small></div></aside><main className="content">{view === "home" && <><header className="page-header"><div><p className="eyebrow">工作台</p><h1>让屏幕在离开时，仍然有温度。</h1><p>选择一份作品，按下快捷键。屏保会在每个显示器上创建独立的全屏窗口，同时让后台工作继续运行；需要真正锁定时，请使用 Windows 系统锁定。</p></div><div className="launch-actions"><button className="secure-button" onClick={async () => { try { await api.lockSystem(); } catch (e) { error(e); } }}>🔒 安全锁定 Windows</button><button className="primary-button" disabled={!active} onClick={() => launch()}>▶ 启动覆盖式屏保</button></div></header><section className="home-grid"><article className="active-card"><div className="card-heading"><div><p className="eyebrow">当前屏幕保护</p><h2>{active?.name ?? "还没有作品"}</h2></div>{active && <button className="ghost-button" onClick={() => setEditor(active)}>编辑作品</button>}</div>{active ? <Visual project={active} /> : <div className="empty-visual">前往资源库下载模板，或创建空白项目。</div>}<footer><kbd>{data.settings.launchShortcut.replace("CommandOrControl", "Ctrl / ⌘")}</kbd><span>启动覆盖式屏保</span></footer></article><article className="info-card"><span>⌁</span><p className="eyebrow">保护方式</p><h2>展示保护，不替代系统锁屏</h2><p>当前版本为每个显示器创建独立的无边框屏保窗口，不会结束下载、渲染、同步或其他后台进程。工作台窗口会在屏保期间隐藏，验证密码后恢复。</p><hr /><small>它不能可靠拦截 Alt + Tab、任务管理器或其他 Windows 系统入口。需要安全锁定请使用上方“安全锁定 Windows”。</small></article></section><section className="section"><div className="section-title"><div><p className="eyebrow">最近作品</p><h2>我的屏保库</h2></div><button className="text-button" onClick={() => setView("library")}>查看全部 →</button></div>{data.projects.length ? <div className="cards">{data.projects.slice(0, 3).map((p) => <Card key={p.id} project={p} active={p.id === data.activeProjectId} edit={() => setEditor(p)} start={() => launch(p.id)} activate={async () => { await api.setActive(p.id); await refresh(); }} remove={() => {}} />)}</div> : <div className="empty">你的私人屏保库还是空的。<button className="primary-button" onClick={() => setView("market")}>探索资源库</button></div>}</section></>}
 {view === "library" && <><header className="page-header"><div><p className="eyebrow">我的库</p><h1>每一份屏保，都是你的私有空间。</h1><p>从空白画布开始，或将资源库中的模板下载后继续编辑。</p></div><button className="primary-button" onClick={() => setShowNew(true)}>＋ 新建屏保</button></header>{data.projects.length ? <div className="cards library-cards">{data.projects.map((p) => <Card key={p.id} project={p} active={p.id === data.activeProjectId} edit={() => setEditor(p)} start={() => launch(p.id)} activate={async () => { await api.setActive(p.id); await refresh(); setNotice({ kind: "ok", text: "已设为当前屏保：" + p.name }); }} remove={async () => { if (confirm("删除“" + p.name + "”？")) { await api.deleteProject(p.id); await refresh(); } }} />)}</div> : <div className="empty tall"><h2>从一张空白画布开始</h2><p>添加文字、图片或时钟组件，构建自己的布局。</p><button className="primary-button" onClick={() => setShowNew(true)}>＋ 新建屏保</button></div>}</>}{view === "market" && <><header className="page-header"><div><p className="eyebrow">资源库</p><h1>从灵感开始，再变成你的。</h1><p>内置模板离线可用。下载到“我的库”后，便成为你可任意修改的私有作品。</p></div></header><div className="templates">{data.templates.map((p) => <article className="template" key={p.id}><Visual project={p} /><div><p className="eyebrow">内置模板</p><h2>{p.name}</h2><p>{p.description}</p><button className="primary-button" onClick={() => getTemplate(p)}>↓ 下载到我的库</button></div></article>)}</div></>}{view === "settings" && settings && <SettingsPanel data={data} settings={settings} setSettings={setSettings} save={async () => { const previous = data.settings; try { await register(settings); await api.saveSettings(settings); await refresh(); setNotice({ kind: "ok", text: "快捷键已保存并注册" }); } catch (e) { await register(previous).catch(() => undefined); error("快捷键没有保存，已恢复原有绑定：" + String(e)); await refresh(); } }} onCaptureChange={async (recording) => { if (recording) await globalShortcut.unregisterAll(); else await register(data.settings); }} reset={async (a, p, q, n) => { await api.resetSecurity(a, p, q, n); await refresh(); setNotice({ kind: "ok", text: "保护密码已重设" }); }} />}</main>{showNew && <div className="modal-wrap"><form className="modal" onSubmit={(e) => { e.preventDefault(); make(); }}><button type="button" className="close" onClick={() => setShowNew(false)}>×</button><p className="eyebrow">从零开始</p><h2>新建屏幕保护</h2><p>创建后可以添加文字、图片和时钟组件。</p><label>屏保名称<input autoFocus value={name} onChange={(e) => setName(e.target.value)} /></label><div className="modal-actions"><button type="button" className="ghost-button" onClick={() => setShowNew(false)}>取消</button><button className="primary-button">创建空白项目</button></div></form></div>}{notice && <div className={"notice " + notice.kind}>{notice.kind === "ok" ? "✓" : "!"} {notice.text}</div>}</div>;
+}
+
+function App() {
+  const [saverWindow, setSaverWindow] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    setSaverWindow(getCurrentWindow().label.startsWith("saver-"));
+  }, []);
+
+  if (saverWindow === null) {
+    return <main className="loading"><div className="brand-mark">S</div>正在启动 ScreenPro…</main>;
+  }
+  return saverWindow ? <Saver /> : <Workbench />;
 }
 
 export default App;

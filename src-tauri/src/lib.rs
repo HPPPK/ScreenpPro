@@ -13,13 +13,13 @@ use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},
     path::PathBuf,
-    process::{Command, Stdio},
-    sync::Mutex,
+    process::{Child, Command, Stdio},
+    sync::{Mutex, OnceLock},
     thread::sleep,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{
-    AppHandle, Emitter, LogicalUnit, Manager, PhysicalPosition, PhysicalSize, WebviewUrl,
+    AppHandle, Emitter, LogicalUnit, Manager, PhysicalPosition, PhysicalSize, RunEvent, WebviewUrl,
     WebviewWindow, WebviewWindowBuilder, WindowEvent, WindowSizeConstraints,
 };
 use uuid::Uuid;
@@ -28,6 +28,16 @@ const STORE_FILE: &str = "screenpro-store.json";
 const ASSETS_DIR: &str = "assets";
 const CANVAS_WIDTH: f64 = 1920.0;
 const CANVAS_HEIGHT: f64 = 1080.0;
+const WEB_THUMBNAIL_CACHE_TTL: Duration = Duration::from_secs(300);
+static WEB_THUMBNAIL_CACHE: OnceLock<Mutex<BTreeMap<String, (Instant, String)>>> = OnceLock::new();
+static WEB_THUMBNAIL_BROWSER: OnceLock<Mutex<Option<WebThumbnailBrowser>>> = OnceLock::new();
+static WEB_THUMBNAIL_CAPTURE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+struct WebThumbnailBrowser {
+    child: Child,
+    port: u16,
+    profile: PathBuf,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -40,6 +50,12 @@ struct Component {
     height: f64,
     #[serde(default)]
     props: Value,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    locked: bool,
+    #[serde(default)]
+    hidden: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -139,6 +155,7 @@ struct AppState {
     saver_project_id: Mutex<Option<String>>,
     workbench_window_state: Mutex<Option<WorkbenchWindowState>>,
     saver_windows: Mutex<BTreeMap<String, SaverWindowBounds>>,
+    saver_reasserting: Mutex<BTreeMap<String, Instant>>,
     saver_starting: Mutex<bool>,
 }
 
@@ -162,6 +179,9 @@ fn text_component(content: &str, x: f64, y: f64, size: f64, color: &str) -> Comp
         width: 900.0,
         height: 120.0,
         props: json!({ "content": content, "fontSize": size, "color": color, "align": "center", "fontWeight": 600 }),
+        name: Some("文字".into()),
+        locked: false,
+        hidden: false,
     }
 }
 
@@ -174,6 +194,9 @@ fn clock_component(x: f64, y: f64, size: f64, color: &str) -> Component {
         width: 700.0,
         height: 190.0,
         props: json!({ "format": "HH:mm", "fontSize": size, "color": color, "align": "center", "showDate": true }),
+        name: Some("时钟".into()),
+        locked: false,
+        hidden: false,
     }
 }
 
@@ -186,6 +209,9 @@ fn image_component(x: f64, y: f64) -> Component {
         width: 540.0,
         height: 380.0,
         props: json!({ "assetId": null, "fit": "cover", "radius": 28 }),
+        name: Some("图片".into()),
+        locked: false,
+        hidden: false,
     }
 }
 
@@ -732,15 +758,29 @@ fn normalize_cdp_websocket_url(raw: &str, port: u16) -> String {
     raw.replacen("localhost", "127.0.0.1", 1)
 }
 
-fn capture_web_thumbnail_impl(url: &str, viewport_width: u32) -> Result<String, String> {
-    let url = url.trim();
-    if !(url.starts_with("http://") || url.starts_with("https://")) {
-        return Err("only http and https pages can be captured".into());
-    }
-    let browser = web_browser_candidates()
-        .into_iter()
-        .next()
+fn ensure_web_thumbnail_browser() -> Result<u16, String> {
+    let browsers = web_browser_candidates();
+    let browser = browsers
+        .first()
         .ok_or("no Chromium-based browser found; install Microsoft Edge or Google Chrome")?;
+    let slot = WEB_THUMBNAIL_BROWSER.get_or_init(|| Mutex::new(None));
+    let mut current = slot
+        .lock()
+        .map_err(|_| "web thumbnail browser state is unavailable".to_string())?;
+    if let Some(existing) = current.as_mut() {
+        if existing
+            .child
+            .try_wait()
+            .map_err(|err| err.to_string())?
+            .is_none()
+        {
+            return Ok(existing.port);
+        }
+        let old = current.take();
+        if let Some(old) = old {
+            let _ = fs::remove_dir_all(old.profile);
+        }
+    }
     let port = TcpListener::bind(("127.0.0.1", 0))
         .map_err(|err| err.to_string())?
         .local_addr()
@@ -748,7 +788,7 @@ fn capture_web_thumbnail_impl(url: &str, viewport_width: u32) -> Result<String, 
         .port();
     let profile = std::env::temp_dir().join(format!("screenpro-web-{}", Uuid::new_v4()));
     fs::create_dir_all(&profile).map_err(|err| format!("cannot create browser profile: {err}"))?;
-    let mut child = Command::new(&browser)
+    let mut child = Command::new(browser)
         .args([
             "--headless=new",
             "--disable-gpu",
@@ -758,19 +798,84 @@ fn capture_web_thumbnail_impl(url: &str, viewport_width: u32) -> Result<String, 
             "--hide-scrollbars",
             "--remote-allow-origins=*",
             "--remote-debugging-address=127.0.0.1",
+            "--window-size=1280,900",
+            "about:blank",
         ])
         .arg(format!("--remote-debugging-port={port}"))
         .arg(format!("--user-data-dir={}", profile.to_string_lossy()))
-        .arg(format!(
-            "--window-size={},900",
-            viewport_width.clamp(640, 2400)
-        ))
-        .arg(url)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .map_err(|err| format!("cannot start browser: {err}"))?;
+    let deadline = Instant::now() + Duration::from_secs(12);
+    loop {
+        if let Ok(value) = read_local_json(port, "/json/list") {
+            if value.as_array().is_some_and(|items| {
+                items
+                    .iter()
+                    .any(|item| item.get("webSocketDebuggerUrl").is_some())
+            }) {
+                *current = Some(WebThumbnailBrowser {
+                    child,
+                    port,
+                    profile,
+                });
+                return Ok(port);
+            }
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = fs::remove_dir_all(&profile);
+            return Err("browser debug endpoint did not start".into());
+        }
+        if child.try_wait().map_err(|err| err.to_string())?.is_some() {
+            let _ = fs::remove_dir_all(&profile);
+            return Err("browser exited before the debug endpoint started".into());
+        }
+        sleep(Duration::from_millis(150));
+    }
+}
 
+fn cleanup_web_thumbnail_browser() {
+    if let Some(slot) = WEB_THUMBNAIL_BROWSER.get() {
+        if let Ok(mut current) = slot.lock() {
+            if let Some(mut browser) = current.take() {
+                let _ = browser.child.kill();
+                let _ = browser.child.wait();
+                let _ = fs::remove_dir_all(browser.profile);
+            }
+        }
+    }
+}
+
+fn capture_web_thumbnail_impl(
+    url: &str,
+    viewport_width: u32,
+    force_refresh: bool,
+) -> Result<String, String> {
+    let url = url.trim();
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err("only http and https pages can be captured".into());
+    }
+    let cache_key = format!("{url}|{}", viewport_width.clamp(640, 2400));
+    if !force_refresh {
+        if let Ok(cache) = WEB_THUMBNAIL_CACHE
+            .get_or_init(|| Mutex::new(BTreeMap::new()))
+            .lock()
+        {
+            if let Some((created, image)) = cache.get(&cache_key) {
+                if created.elapsed() < WEB_THUMBNAIL_CACHE_TTL {
+                    return Ok(image.clone());
+                }
+            }
+        }
+    }
+    let _capture_guard = WEB_THUMBNAIL_CAPTURE_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|_| "web thumbnail capture is busy".to_string())?;
+    let port = ensure_web_thumbnail_browser()?;
     let result = (|| {
         let deadline = Instant::now() + Duration::from_secs(12);
         let targets = loop {
@@ -785,9 +890,6 @@ fn capture_web_thumbnail_impl(url: &str, viewport_width: u32) -> Result<String, 
             }
             if Instant::now() >= deadline {
                 return Err("browser debug endpoint did not start".into());
-            }
-            if child.try_wait().map_err(|err| err.to_string())?.is_some() {
-                return Err("browser exited before the page could be captured".into());
             }
             sleep(Duration::from_millis(150));
         };
@@ -836,13 +938,13 @@ fn capture_web_thumbnail_impl(url: &str, viewport_width: u32) -> Result<String, 
             .and_then(Value::as_f64)
             .unwrap_or(viewport_width as f64)
             .max(viewport_width as f64)
-            .clamp(640.0, 8192.0);
+            .clamp(640.0, 4096.0);
         let height = metrics
             .get("height")
             .and_then(Value::as_f64)
             .unwrap_or(900.0)
             .max(900.0)
-            .clamp(900.0, 12000.0);
+            .clamp(900.0, 8000.0);
         let screenshot = cdp_call(
             &mut socket,
             &mut next_id,
@@ -858,19 +960,43 @@ fn capture_web_thumbnail_impl(url: &str, viewport_width: u32) -> Result<String, 
             .pointer("/result/data")
             .and_then(Value::as_str)
             .ok_or("browser did not return a screenshot")?;
-        Ok(format!("data:image/png;base64,{data}"))
+        if data.len() > 16_000_000 {
+            return Err("web thumbnail is too large".into());
+        }
+        let image = format!("data:image/png;base64,{data}");
+        if let Ok(mut cache) = WEB_THUMBNAIL_CACHE
+            .get_or_init(|| Mutex::new(BTreeMap::new()))
+            .lock()
+        {
+            cache.insert(cache_key, (Instant::now(), image.clone()));
+            while cache.len() > 6 {
+                if let Some(oldest) = cache
+                    .iter()
+                    .min_by_key(|(_, (created, _))| *created)
+                    .map(|(key, _)| key.clone())
+                {
+                    cache.remove(&oldest);
+                } else {
+                    break;
+                }
+            }
+        }
+        Ok(image)
     })();
-    let _ = child.kill();
-    let _ = child.wait();
-    let _ = fs::remove_dir_all(&profile);
     result
 }
 
 #[tauri::command]
-async fn capture_web_thumbnail(url: String, viewport_width: u32) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || capture_web_thumbnail_impl(&url, viewport_width))
-        .await
-        .map_err(|err| format!("web thumbnail worker failed: {err}"))?
+async fn capture_web_thumbnail(
+    url: String,
+    viewport_width: u32,
+    force_refresh: bool,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        capture_web_thumbnail_impl(&url, viewport_width, force_refresh)
+    })
+    .await
+    .map_err(|err| format!("web thumbnail worker failed: {err}"))?
 }
 
 #[tauri::command]
@@ -884,7 +1010,10 @@ fn import_asset(app: AppHandle, source_path: String) -> Result<String, String> {
         .and_then(|item| item.to_str())
         .unwrap_or("png")
         .to_lowercase();
-    if !matches!(extension.as_str(), "png" | "jpg" | "jpeg" | "webp" | "gif") {
+    if !matches!(
+        extension.as_str(),
+        "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp" | "svg"
+    ) {
         return Err("仅支持 PNG、JPG、WEBP 或 GIF 图片".into());
     }
     let asset_id = Uuid::new_v4().to_string();
@@ -953,14 +1082,20 @@ fn restore_workbench_window(
     Ok(())
 }
 
-fn saver_constraints(monitor_size: PhysicalSize<u32>, scale_factor: f64) -> WindowSizeConstraints {
+fn saver_logical_dimensions(monitor_size: PhysicalSize<u32>, scale_factor: f64) -> (f64, f64) {
     let safe_scale = if scale_factor.is_finite() && scale_factor > 0.0 {
         scale_factor
     } else {
         1.0
     };
-    let logical_width = monitor_size.width as f64 / safe_scale;
-    let logical_height = monitor_size.height as f64 / safe_scale;
+    (
+        monitor_size.width as f64 / safe_scale,
+        monitor_size.height as f64 / safe_scale,
+    )
+}
+
+fn saver_constraints(monitor_size: PhysicalSize<u32>, scale_factor: f64) -> WindowSizeConstraints {
+    let (logical_width, logical_height) = saver_logical_dimensions(monitor_size, scale_factor);
 
     WindowSizeConstraints {
         min_width: Some(LogicalUnit::new(logical_width).into()),
@@ -1072,6 +1207,9 @@ fn close_saver_windows(app: &AppHandle) -> Result<(), String> {
     let labels = std::mem::take(&mut *windows)
         .into_keys()
         .collect::<Vec<_>>();
+    if let Ok(mut pending) = state.saver_reasserting.lock() {
+        pending.clear();
+    }
     for label in labels {
         if let Some(window) = app.get_webview_window(&label) {
             let _ = window.close();
@@ -1081,6 +1219,22 @@ fn close_saver_windows(app: &AppHandle) -> Result<(), String> {
 }
 
 fn reassert_saver_window_after(app: AppHandle, label: String, delay: Duration) {
+    let already_pending = app
+        .state::<AppState>()
+        .saver_reasserting
+        .lock()
+        .map(|mut pending| {
+            if pending.contains_key(&label) {
+                true
+            } else {
+                pending.insert(label.clone(), Instant::now());
+                false
+            }
+        })
+        .unwrap_or(false);
+    if already_pending {
+        return;
+    }
     std::thread::spawn(move || {
         if !delay.is_zero() {
             std::thread::sleep(delay);
@@ -1091,17 +1245,19 @@ fn reassert_saver_window_after(app: AppHandle, label: String, delay: Duration) {
             .lock()
             .map(|active| *active)
             .unwrap_or(false);
-        if !active {
-            return;
+        if active {
+            let bounds = app
+                .state::<AppState>()
+                .saver_windows
+                .lock()
+                .ok()
+                .and_then(|windows| windows.get(&label).copied());
+            if let (Some(window), Some(bounds)) = (app.get_webview_window(&label), bounds) {
+                let _ = cover_window_to_bounds(&window, bounds);
+            }
         }
-        let bounds = app
-            .state::<AppState>()
-            .saver_windows
-            .lock()
-            .ok()
-            .and_then(|windows| windows.get(&label).copied());
-        if let (Some(window), Some(bounds)) = (app.get_webview_window(&label), bounds) {
-            let _ = cover_window_to_bounds(&window, bounds);
+        if let Ok(mut pending) = app.state::<AppState>().saver_reasserting.lock() {
+            pending.remove(&label);
         }
     });
 }
@@ -1370,6 +1526,7 @@ pub fn run() {
                 saver_project_id: Mutex::new(None),
                 workbench_window_state: Mutex::new(None),
                 saver_windows: Mutex::new(BTreeMap::new()),
+                saver_reasserting: Mutex::new(BTreeMap::new()),
                 saver_starting: Mutex::new(false),
             });
             // A prior interrupted saver can leave the native main window minimized or hidden.
@@ -1402,8 +1559,13 @@ pub fn run() {
             get_saver_project_id,
             lock_system
         ])
-        .run(tauri::generate_context!())
-        .expect("启动 ScreenPro 时发生错误");
+        .build(tauri::generate_context!())
+        .expect("启动 ScreenPro 时发生错误")
+        .run(|_, event| {
+            if matches!(event, RunEvent::Exit) {
+                cleanup_web_thumbnail_browser();
+            }
+        });
 }
 
 #[cfg(test)]
@@ -1419,6 +1581,22 @@ mod tests {
         assert_eq!(
             normalize_cdp_websocket_url("ws://localhost:9222/devtools/page/XYZ", 19422),
             "ws://127.0.0.1:19422/devtools/page/XYZ"
+        );
+    }
+
+    #[test]
+    fn saver_constraints_convert_physical_pixels_to_logical_dpi_sizes() {
+        assert_eq!(
+            saver_logical_dimensions(PhysicalSize::new(1920, 1080), 1.0),
+            (1920.0, 1080.0)
+        );
+        assert_eq!(
+            saver_logical_dimensions(PhysicalSize::new(1920, 1080), 1.25),
+            (1536.0, 864.0)
+        );
+        assert_eq!(
+            saver_logical_dimensions(PhysicalSize::new(2560, 1440), 0.0),
+            (2560.0, 1440.0)
         );
     }
 

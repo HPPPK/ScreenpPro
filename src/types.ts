@@ -29,6 +29,9 @@ export interface SaverComponent {
   width: number;
   height: number;
   props: Record<string, unknown>;
+  name?: string;
+  locked?: boolean;
+  hidden?: boolean;
 }
 
 export interface ScreenSaverProject {
@@ -107,7 +110,11 @@ export const blankComponent = (componentType: ComponentType): SaverComponent => 
     calendar: { id, componentType, x: 540, y: 250, width: 840, height: 580, props: { monthOffset: 0, color: "#FFFFFF", accentColor: "#9DE8BC", showToday: true, showWeekNumber: false } },
     pomodoro: { id, componentType, x: 600, y: 340, width: 720, height: 400, props: { focusMinutes: 25, breakMinutes: 5, startAt: Date.now(), label: "专注中", fontSize: 94, color: "#FFFFFF", accentColor: "#9DE8BC" } },
     dayProgress: { id, componentType, x: 500, y: 700, width: 920, height: 180, props: { label: "今天", color: "#9DE8BC", trackColor: "#FFFFFF33", showTime: true } },
-    markdown: { id, componentType, x: 400, y: 240, width: 1120, height: 600, props: { content: "# 今日计划\n\n- 保持专注\n- 适当休息\n- 完成最重要的一件事", color: "#FFFFFF", fontSize: 34, lineHeight: 1.5, align: "left" } }
+    markdown: { id, componentType, x: 400, y: 240, width: 1120, height: 600, props: { content: "# 今日计划\n\n- 保持专注\n- 适当休息\n- 完成最重要的一件事", color: "#FFFFFF", fontSize: 34, lineHeight: 1.5, maxLines: 12, align: "left" } }
   };
-  return structuredClone(defaults[componentType]);
+  const component = structuredClone(defaults[componentType]);
+  component.name = componentLabels[componentType];
+  component.locked = false;
+  component.hidden = false;
+  return component;
 };

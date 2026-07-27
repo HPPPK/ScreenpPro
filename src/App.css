@@ -103,3 +103,37 @@
 
 .web-preview-viewport { position: relative; flex: 1 1 auto; min-height: 0; overflow: hidden; background: #fff; }
 .web-preview-thumbnail { display: block; width: 100%; height: 100%; object-fit: contain; object-position: top center; background: #fff; }
+
+
+/* Stable editor/runtime feedback states */
+.editor-save-state { display: block; margin-top: 4px; color: #718096; font-size: 11px; }
+.editor-save-state.dirty { color: #b7791f; }
+.web-preview-action { align-self: center; border: 0; border-radius: 8px; padding: 8px 14px; color: #10213b; background: #9de8bc; cursor: pointer; font-weight: 700; }
+.web-preview-action:hover { filter: brightness(1.05); }
+.remote-status { display: block; opacity: .68; font-size: 11px; margin-top: 6px; }
+.image-error { gap: 6px; color: #b42318; background: #fff1f0; border: 1px dashed #f0a6a0; }
+.image-retry { border: 0; border-radius: 7px; padding: 5px 9px; color: #8f1d14; background: #ffd8d5; cursor: pointer; font-size: 11px; }
+.markdown-panel, .text-piece, .quote-panel, .data-panel, .calendar-panel, .rss-panel { overflow-wrap: anywhere; word-break: break-word; min-width: 0; min-height: 0; }
+
+.asset-list{margin-top:10px;border:1px solid #e5eaf0;border-radius:8px;overflow:hidden}.asset-row{display:flex;align-items:center;justify-content:space-between;padding:7px 9px;font-size:11px;color:#69758a;border-top:1px solid #edf0f4}.asset-row:first-child{border-top:0}.asset-row .text-button{font-size:10px;padding:0}.image-error{border:1px solid #e7a3a8;background:#fff5f5;color:#b84852}.image-retry{border:0;border-radius:6px;padding:4px 8px;background:#b84852;color:white;font-size:10px;cursor:pointer}.image-retry:hover{filter:brightness(1.05)}
+
+/* Third-priority editor workflow */
+.editor-canvas-viewport{flex:1;min-height:0;overflow:auto;display:flex;align-items:center;justify-content:center;padding:14px 20px;background:#e8ecf1;border:1px solid #dce2e9;border-radius:12px}
+.editor-canvas-viewport .editor-canvas{flex:0 0 auto;max-height:none;margin:0;transition:transform .14s ease}
+.canvas-toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:-2px 0 12px;padding:8px 10px;background:#fff;border:1px solid #e0e5eb;border-radius:9px;box-shadow:0 3px 12px #42506a0d}
+.toolbar-group{display:flex;gap:4px;align-items:center;border-right:1px solid #e2e7ed;padding-right:8px}
+.canvas-toolbar button,.zoom-controls button,.layer-actions button,.layer-icon{border:1px solid #dbe2ea;background:#fff;color:#516078;border-radius:6px;padding:5px 8px;font-size:10px;cursor:pointer}
+.canvas-toolbar button:hover,.zoom-controls button:hover,.layer-actions button:hover,.layer-icon:hover{border-color:#79c8a6;background:#f2fff8;color:#246849}
+.toolbar-check{margin:0 0 0 2px!important;font-size:10px!important;white-space:nowrap}
+.zoom-controls{display:flex;align-items:center;gap:4px;margin-left:auto;color:#647286;font-size:10px}.zoom-controls span{min-width:38px;text-align:center}.zoom-controls button{padding:5px 7px}
+.layer-actions{display:flex;gap:5px;margin:10px 0 3px}.layer-actions button{flex:1;font-size:14px;padding:5px 3px}
+.layer-row{display:flex;align-items:center;gap:3px;margin:3px 0}.layer-row .layer{display:flex;align-items:center;gap:7px;min-width:0;flex:1;padding:8px}.layer-row .layer-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.layer-row .layer-name small{font-weight:400;color:#9aa5b3;font-size:9px}.layer-row.hidden .layer{opacity:.45;text-decoration:line-through}.layer-row.active .layer{background:#edf3f5;color:#1d3b31;font-weight:700}.layer-icon{width:28px;height:27px;padding:0;font-size:11px;flex:0 0 auto}.guide-layer{position:absolute;inset:0;z-index:20;pointer-events:none}.guide-line{position:absolute;display:block;background:#ffae45;box-shadow:0 0 0 1px #ffae4540}.guide-line.vertical{top:0;bottom:0;width:1px}.guide-line.horizontal{left:0;right:0;height:1px}
+
+/* Component property reset and context menu */
+.property-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 14px; }
+.property-actions button { min-width: 0; }
+.component-context-menu { position: fixed; z-index: 1000; min-width: 168px; padding: 6px; display: flex; flex-direction: column; gap: 2px; background: #ffffff; border: 1px solid #dce3eb; border-radius: 10px; box-shadow: 0 14px 34px #1b243833; }
+.component-context-menu button { border: 0; border-radius: 7px; padding: 8px 10px; color: #334155; background: transparent; text-align: left; font-size: 11px; cursor: pointer; }
+.component-context-menu button:hover { color: #174f39; background: #edfaf3; }
+.world-clock-invalid { opacity: .7; }
+.world-clock-invalid strong { color: #ffcf88; font-size: .78em; }

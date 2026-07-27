@@ -13,7 +13,7 @@ export const api = {
  verifySecurityAnswer: (answer: string) => invoke<boolean>("verify_security_answer", { answer }),
  resetSecurity: (answer: string, password: string, securityQuestion: string, securityAnswer: string) => invoke<void>("reset_security", { answer, password, securityQuestion, securityAnswer }),
  importAsset: (sourcePath: string) => invoke<string>("import_asset", { sourcePath }),
- captureWebThumbnail: (url: string, viewportWidth: number) => invoke<string>("capture_web_thumbnail", { url, viewportWidth }),
+ captureWebThumbnail: (url: string, viewportWidth: number, forceRefresh = false) => invoke<string>("capture_web_thumbnail", { url, viewportWidth, forceRefresh }),
  getAssetPath: (assetId: string) => invoke<string>("get_asset_path", { assetId }),
  startSaver: (projectId?: string) => invoke<void>("start_saver", { projectId }),
  endSaver: () => invoke<void>("end_saver"),
